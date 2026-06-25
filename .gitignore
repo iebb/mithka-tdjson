@@ -1,0 +1,6 @@
+dist/
+*.zip
+*.xcframework/
+*.dSYM/
+.DS_Store
+
