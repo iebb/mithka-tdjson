@@ -4,3 +4,5 @@ dist/
 *.dSYM/
 .DS_Store
 
+build/
+*.log
