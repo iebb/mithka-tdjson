@@ -1,0 +1,160 @@
+name: Sync TDLib Artifacts
+
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: TDLib ref to build
+        required: false
+        default: master
+      force:
+        description: Rebuild even if the release tag already exists
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  TD_REPO: https://github.com/tdlib/td.git
+
+jobs:
+  prepare:
+    name: Resolve upstream TDLib
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+      upstream_short_sha: ${{ steps.resolve.outputs.upstream_short_sha }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve upstream commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref || 'master' }}
+          FORCE_BUILD: ${{ inputs.force || false }}
+        run: |
+          upstream_sha="$(git ls-remote "$TD_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+          test -n "$upstream_sha"
+          upstream_short_sha="${upstream_sha:0:12}"
+          release_tag="upstream-$upstream_short_sha"
+          should_build=true
+          if [ "$FORCE_BUILD" != "true" ] && gh release view "$release_tag" >/dev/null 2>&1; then
+            should_build=false
+          fi
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_short_sha=$upstream_short_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "TDLib $UPSTREAM_REF -> $upstream_sha"
+          echo "Release tag: $release_tag"
+          echo "Should build: $should_build"
+
+  build-android:
+    name: Android ${{ matrix.abi }}
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gperf clang libssl-dev zip
+
+      - name: Install Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" >/dev/null 2>&1 || \
+          yes | sdkmanager "ndk;28.2.13676358" >/dev/null 2>&1 || true
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Cache Android native build
+        uses: actions/cache@v4
+        with:
+          path: build/android-api23
+          key: android-${{ matrix.abi }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-android-libs.sh') }}
+          restore-keys: |
+            android-${{ matrix.abi }}-
+
+      - name: Build tdjson Android asset
+        env:
+          TD_COMMIT: ${{ needs.prepare.outputs.upstream_sha }}
+          TD_ENABLE_LTO: OFF
+        run: scripts/build-android-libs.sh ${{ matrix.abi }}
+
+      - name: Upload Android asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: tdjson-android-${{ matrix.abi }}
+          path: dist/tdjson-android-${{ matrix.abi }}.zip
+          if-no-files-found: error
+
+  build-ios:
+    name: iOS XCFramework
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: brew install cmake ninja
+
+      - name: Cache iOS native build
+        uses: actions/cache@v4
+        with:
+          path: build/ios-min13.0
+          key: ios-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-ios-xcframework.sh') }}
+          restore-keys: |
+            ios-
+
+      - name: Build tdjson iOS asset
+        env:
+          TD_COMMIT: ${{ needs.prepare.outputs.upstream_sha }}
+        run: scripts/build-ios-xcframework.sh
+
+      - name: Upload iOS asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: tdjson-ios
+          path: dist/tdjson-ios.xcframework.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish tdjson release
+    needs: [prepare, build-android, build-ios]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download tdjson assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: |
+          ls -lh release-assets
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --cleanup-tag --yes
+          fi
+          gh release create "$RELEASE_TAG" release-assets/*.zip \
+            --title "TDLib $UPSTREAM_SHA" \
+            --notes "Automated build of tdjson artifacts from tdlib/td@$UPSTREAM_SHA."

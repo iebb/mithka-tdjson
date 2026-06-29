@@ -5,7 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TD_REPO="${TD_REPO:-https://github.com/tdlib/td.git}"
 TD_COMMIT="${TD_COMMIT:-a8f21f5230172634becc1739050ef23ecd6ea291}"
 OPENSSL_SRC_DIR="${OPENSSL_SRC_DIR:-/Users/ieb/Vibe/Nagram-iOS/submodules/openssl}"
-OPENSSL_TARBALL="$OPENSSL_SRC_DIR/openssl-1.1.1d.tar.gz"
+OPENSSL_VERSION="${OPENSSL_VERSION:-1.1.1d}"
+OPENSSL_TARBALL="${OPENSSL_TARBALL:-$OPENSSL_SRC_DIR/openssl-$OPENSSL_VERSION.tar.gz}"
+OPENSSL_URL="${OPENSSL_URL:-https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1d/openssl-$OPENSSL_VERSION.tar.gz}"
 MIN_IOS="${MIN_IOS:-13.0}"
 BUILD_ROOT="${BUILD_ROOT:-$ROOT/build/ios-min$MIN_IOS}"
 OUT_DIR="$ROOT/dist"
@@ -14,11 +16,19 @@ ZIP="$OUT_DIR/tdjson-ios.xcframework.zip"
 UPSTREAM_TD_SRC="$BUILD_ROOT/upstream-td"
 TD_SRC="${TD_SRC:-$UPSTREAM_TD_SRC}"
 GENERATED_TD_SRC="$BUILD_ROOT/td-src"
+TD_VERSION=""
 
-if [[ ! -f "$OPENSSL_TARBALL" ]]; then
-  echo "error: missing OpenSSL tarball at $OPENSSL_TARBALL" >&2
-  exit 1
-fi
+ensure_openssl_tarball() {
+  if [[ -f "$OPENSSL_TARBALL" ]]; then
+    return
+  fi
+  mkdir -p "$BUILD_ROOT/downloads"
+  OPENSSL_TARBALL="$BUILD_ROOT/downloads/openssl-$OPENSSL_VERSION.tar.gz"
+  if [[ ! -f "$OPENSSL_TARBALL" ]]; then
+    echo "==> Downloading OpenSSL $OPENSSL_VERSION"
+    curl -fsSL "$OPENSSL_URL" -o "$OPENSSL_TARBALL"
+  fi
+}
 
 prepare_td_source() {
   if [[ "$TD_SRC" == "$UPSTREAM_TD_SRC" ]]; then
@@ -33,12 +43,12 @@ prepare_td_source() {
     echo "error: missing TDLib source at $TD_SRC" >&2
     exit 1
   fi
-  local version
-  version="$(sed -n 's/project(TDLib VERSION \([^ ]*\).*/\1/p' "$TD_SRC/CMakeLists.txt" | head -n 1)"
-  if [[ "$version" != "1.8.65" ]]; then
-    echo "error: expected TDLib 1.8.65, got $version from $TD_SRC" >&2
+  TD_VERSION="$(sed -n 's/project(TDLib VERSION \([^ ]*\).*/\1/p' "$TD_SRC/CMakeLists.txt" | head -n 1)"
+  if [[ -z "$TD_VERSION" ]]; then
+    echo "error: could not read TDLib version from $TD_SRC" >&2
     exit 1
   fi
+  echo "==> TDLib $TD_VERSION ($TD_COMMIT)"
 }
 
 patch_openssl_for_sim_arm64() {
@@ -147,9 +157,9 @@ build_tdjson_slice() {
   <key>CFBundlePackageType</key>
   <string>FMWK</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.8.65</string>
+  <string>$TD_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1.8.65</string>
+  <string>$TD_VERSION</string>
   <key>MinimumOSVersion</key>
   <string>$MIN_IOS</string>
 </dict>
@@ -168,6 +178,7 @@ MODULEMAP
 rm -rf "$XCFRAMEWORK" "$ZIP"
 mkdir -p "$BUILD_ROOT" "$OUT_DIR"
 
+ensure_openssl_tarball
 prepare_td_source
 
 echo "==> Preparing generated TDLib sources"
