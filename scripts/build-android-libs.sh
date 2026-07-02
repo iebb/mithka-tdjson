@@ -52,6 +52,19 @@ prepare_td_source() {
   echo "==> TDLib $TD_VERSION ($TD_COMMIT)"
 }
 
+apply_mithka_patches() {
+  local patch="$ROOT/patches/mithka-session-backup.patch"
+  if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
+    echo "==> Applying Mithka TDLib session backup patch"
+    git -C "$TD_SRC" apply --unidiff-zero "$patch"
+  elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
+    echo "==> Mithka TDLib session backup patch already applied"
+  else
+    echo "error: failed to apply Mithka TDLib session backup patch" >&2
+    exit 1
+  fi
+}
+
 build_openssl() {
   local abi="$1"
   local src="$BUILD_ROOT/openssl-$OPENSSL_VERSION"
@@ -143,6 +156,7 @@ build_tdjson() {
 }
 
 prepare_td_source
+apply_mithka_patches
 prepare_cross_compiling
 for abi in "${ABIS[@]}"; do
   build_openssl "$abi"

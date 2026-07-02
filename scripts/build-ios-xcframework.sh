@@ -51,6 +51,20 @@ prepare_td_source() {
   echo "==> TDLib $TD_VERSION ($TD_COMMIT)"
 }
 
+apply_mithka_patches() {
+  local src="$1"
+  local patch="$ROOT/patches/mithka-session-backup.patch"
+  if git -C "$src" apply --unidiff-zero --check "$patch"; then
+    echo "==> Applying Mithka TDLib session backup patch"
+    git -C "$src" apply --unidiff-zero "$patch"
+  elif git -C "$src" apply --unidiff-zero --reverse --check "$patch"; then
+    echo "==> Mithka TDLib session backup patch already applied"
+  else
+    echo "error: failed to apply Mithka TDLib session backup patch" >&2
+    exit 1
+  fi
+}
+
 patch_openssl_for_sim_arm64() {
   local conf="$1/Configurations/15-ios.conf"
   python3 - "$conf" "$MIN_IOS" <<'PY'
@@ -185,6 +199,7 @@ echo "==> Preparing generated TDLib sources"
 rm -rf "$GENERATED_TD_SRC" "$BUILD_ROOT/native-generate"
 mkdir -p "$GENERATED_TD_SRC"
 rsync -a --delete "$TD_SRC/" "$GENERATED_TD_SRC/"
+apply_mithka_patches "$GENERATED_TD_SRC"
 cmake -S "$GENERATED_TD_SRC" -B "$BUILD_ROOT/native-generate" -G Ninja \
   -DTD_GENERATE_SOURCE_FILES=ON \
   -DCMAKE_BUILD_TYPE=Release

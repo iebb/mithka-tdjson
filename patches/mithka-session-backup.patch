@@ -1,0 +1,141 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 95b441409..4fe40d591 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1431 +1431 @@ generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/te
+-target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
++target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
+@@ -1439 +1439 @@ target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
+-target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
++target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
+diff --git a/td/telegram/td_json_client.cpp b/td/telegram/td_json_client.cpp
+index 47d62bef2..9a29a5338 100644
+--- a/td/telegram/td_json_client.cpp
++++ b/td/telegram/td_json_client.cpp
+@@ -11,0 +12,2 @@
++#include "tddb/td/db/binlog/Binlog.h"
++#include "tddb/td/db/BinlogKeyValue.h"
+@@ -12,0 +15,3 @@
++#include "td/utils/port/thread_local.h"
++
++#include <cctype>
+@@ -52,0 +58,86 @@ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callbac
++
++namespace {
++
++static TD_THREAD_LOCAL td::string *mithka_last_error;
++
++const char *set_mithka_last_error(td::string error) {
++  td::init_thread_local<td::string>(mithka_last_error);
++  *mithka_last_error = std::move(error);
++  return mithka_last_error->c_str();
++}
++
++bool has_decimal_suffix(td::Slice key, td::Slice prefix) {
++  if (!td::begins_with(key, prefix) || key.size() == prefix.size()) {
++    return false;
++  }
++  for (auto c : key.substr(prefix.size())) {
++    if (!std::isdigit(static_cast<unsigned char>(c))) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool is_mithka_session_backup_key(td::Slice key) {
++  return key == "auth" || key == "auth_is_bot" || key == "my_id" || key == "server_time_difference" ||
++         key == "dc_options_update" || key == "config_expire" || has_decimal_suffix(key, "auth") ||
++         has_decimal_suffix(key, "salt") || has_decimal_suffix(key, "config_recovery_auth") ||
++         has_decimal_suffix(key, "config_recovery_salt");
++}
++
++td::Status write_compact_session_binlog(td::Slice source_binlog_path, td::Slice destination_binlog_path) {
++  if (source_binlog_path.empty()) {
++    return td::Status::Error("Source binlog path is empty");
++  }
++  if (destination_binlog_path.empty()) {
++    return td::Status::Error("Destination binlog path is empty");
++  }
++
++  td::BinlogKeyValue<td::Binlog> source;
++  TRY_STATUS(source.init(source_binlog_path.str()));
++
++  if (source.get("auth") != "ok") {
++    return td::Status::Error("Source binlog doesn't contain an authorized TDLib session");
++  }
++  if (source.get("my_id").empty()) {
++    return td::Status::Error("Source binlog doesn't contain my_id");
++  }
++
++  td::Binlog::destroy(destination_binlog_path).ignore();
++  td::BinlogKeyValue<td::Binlog> destination;
++  TRY_STATUS(destination.init(destination_binlog_path.str()));
++
++  auto values = source.get_all();
++  td::int32 copied_key_count = 0;
++  for (const auto &entry : values) {
++    if (is_mithka_session_backup_key(entry.first)) {
++      destination.set(entry.first, entry.second);
++      copied_key_count++;
++    }
++  }
++  if (copied_key_count < 3) {
++    return td::Status::Error("Source binlog doesn't contain enough session keys");
++  }
++
++  destination.force_sync(td::Promise<td::Unit>(), "mithka_session_backup");
++  destination.close(td::Promise<td::Unit>());
++  source.close();
++  return td::Status::OK();
++}
++
++}  // namespace
++
++int td_mithka_write_compact_session_binlog(const char *source_binlog_path, const char *destination_binlog_path) {
++  set_mithka_last_error(td::string());
++  auto status = write_compact_session_binlog(td::Slice(source_binlog_path == nullptr ? "" : source_binlog_path),
++                                             td::Slice(destination_binlog_path == nullptr ? "" : destination_binlog_path));
++  if (status.is_error()) {
++    set_mithka_last_error(status.message().str());
++    return -1;
++  }
++  return 0;
++}
++
++const char *td_mithka_last_error() {
++  return set_mithka_last_error(mithka_last_error == nullptr ? td::string() : *mithka_last_error);
++}
+diff --git a/td/telegram/td_json_client.h b/td/telegram/td_json_client.h
+index 7ea78bf4c..65b77fe68 100644
+--- a/td/telegram/td_json_client.h
++++ b/td/telegram/td_json_client.h
+@@ -87,0 +88,21 @@ TDJSON_EXPORT const char *td_execute(const char *request);
++/**
++ * Writes a compact TDLib session binlog containing only authorization-related
++ * persistent keys from an existing td.binlog.
++ *
++ * This is a Mithka-private extension. It is intentionally outside the public
++ * TDLib JSON API and is used only for local account session backup.
++ *
++ * \param[in] source_binlog_path Path to the source td.binlog.
++ * \param[in] destination_binlog_path Path where the compact td.binlog will be written.
++ * \return 0 on success; -1 on failure. Use td_mithka_last_error for details.
++ */
++TDJSON_EXPORT int td_mithka_write_compact_session_binlog(const char *source_binlog_path,
++                                                         const char *destination_binlog_path);
++
++/**
++ * Returns the last Mithka-private TDLib extension error for the current thread.
++ * The returned pointer is valid until the next call to a TDLib JSON or Mithka
++ * extension function on the same thread.
++ */
++TDJSON_EXPORT const char *td_mithka_last_error();
++
+diff --git a/tdclientjson_export_list b/tdclientjson_export_list
+index 51f370e6f..dce850970 100644
+--- a/tdclientjson_export_list
++++ b/tdclientjson_export_list
+@@ -14,0 +15,2 @@ _td_set_log_message_callback
++_td_mithka_write_compact_session_binlog
++_td_mithka_last_error
