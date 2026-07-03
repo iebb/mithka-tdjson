@@ -17,17 +17,17 @@ index 95b441409..4fe40d591 100644
  target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
 -target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 +target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
-
+ 
  # EXECUTABLES
  if (EMSCRIPTEN)
 diff --git a/td/telegram/td_json_client.cpp b/td/telegram/td_json_client.cpp
-index 47d62bef2..0ad7b9708 100644
+index 47d62bef2..2e42f0359 100644
 --- a/td/telegram/td_json_client.cpp
 +++ b/td/telegram/td_json_client.cpp
-@@ -9,7 +9,20 @@
+@@ -9,7 +9,22 @@
  #include "td/telegram/Client.h"
  #include "td/telegram/ClientJson.h"
-
+ 
 +#include "td/mtproto/AuthKey.h"
 +#include "td/mtproto/DhHandshake.h"
 +#include "tddb/td/db/DbKey.h"
@@ -44,10 +44,10 @@ index 47d62bef2..0ad7b9708 100644
 +#include <fstream>
 +#include <limits>
 +#include <memory>
-
+ 
  void *td_json_client_create() {
    return new td::ClientJson();
-@@ -50,3 +63,266 @@ const char *td_execute(const char *request) {
+@@ -50,3 +65,309 @@ const char *td_execute(const char *request) {
  void td_set_log_message_callback(int max_verbosity_level, td_log_message_callback_ptr callback) {
    td::ClientManager::set_log_message_callback(max_verbosity_level, callback);
  }
@@ -167,7 +167,12 @@ index 47d62bef2..0ad7b9708 100644
 +  return td::Status::Error("Source binlog doesn't contain a valid auth key");
 +}
 +
-+td::Status load_binlog_pmc_snapshot(td::Slice source_snapshot_path, td::BinlogKeyValue<td::Binlog> *source) {
++td::DbKey td_default_db_key() {
++  return td::DbKey::raw_key("cucumber");
++}
++
++td::Status load_binlog_pmc_snapshot_with_key(td::Slice source_snapshot_path, td::BinlogKeyValue<td::Binlog> *source,
++                                             td::DbKey key) {
 +  source->external_init_begin(MITHKA_BINLOG_PMC_MAGIC);
 +  td::Binlog source_binlog;
 +  return source_binlog.init(source_snapshot_path.str(),
@@ -176,7 +181,28 @@ index 47d62bef2..0ad7b9708 100644
 +                                source->external_init_handle(event);
 +                              }
 +                            },
-+                            td::DbKey::raw_key("cucumber"));
++                            std::move(key));
++}
++
++td::Status load_binlog_pmc_snapshot(td::Slice source_snapshot_path, td::BinlogKeyValue<td::Binlog> *source) {
++  auto first_status = load_binlog_pmc_snapshot_with_key(source_snapshot_path, source, td_default_db_key());
++  if (first_status.is_ok()) {
++    return first_status;
++  }
++
++  auto status = load_binlog_pmc_snapshot_with_key(source_snapshot_path, source, td::DbKey::empty());
++  if (status.is_ok()) {
++    return status;
++  }
++  status = load_binlog_pmc_snapshot_with_key(source_snapshot_path, source, td::DbKey::password("cucumber"));
++  if (status.is_ok()) {
++    return status;
++  }
++  status = load_binlog_pmc_snapshot_with_key(source_snapshot_path, source, td::DbKey::raw_key(""));
++  if (status.is_ok()) {
++    return status;
++  }
++  return first_status;
 +}
 +
 +td::Result<td::string> export_session_string(td::Slice source_binlog_path, td::int32 api_id, bool test_mode,
@@ -285,7 +311,7 @@ index 47d62bef2..0ad7b9708 100644
 +  td::Binlog::destroy(destination_binlog_path).ignore();
 +  auto destination_binlog = std::make_shared<td::Binlog>();
 +  TRY_STATUS(destination_binlog->init(destination_binlog_path.str(), [](const td::BinlogEvent &) {},
-+                                      td::DbKey::raw_key("cucumber")));
++                                      td_default_db_key()));
 +  td::BinlogKeyValue<td::Binlog> destination;
 +  destination.external_init_begin(MITHKA_BINLOG_PMC_MAGIC);
 +  destination.external_init_finish(std::move(destination_binlog));
@@ -332,13 +358,13 @@ index 47d62bef2..0ad7b9708 100644
 +  return set_mithka_last_error(mithka_last_error == nullptr ? td::string() : *mithka_last_error);
 +}
 diff --git a/td/telegram/td_json_client.h b/td/telegram/td_json_client.h
-index 7ea78bf4c..90049dd40 100644
+index 7ea78bf4c..b8b504f77 100644
 --- a/td/telegram/td_json_client.h
 +++ b/td/telegram/td_json_client.h
-@@ -85,6 +85,36 @@ TDJSON_EXPORT const char *td_receive(double timeout);
+@@ -85,6 +85,37 @@ TDJSON_EXPORT const char *td_receive(double timeout);
   */
  TDJSON_EXPORT const char *td_execute(const char *request);
-
+ 
 +/**
 + * Exports a Pyrogram-compatible TDLib session string using format
 + * >BI?256sQ? (dc_id, api_id, test_mode, auth_key, user_id, is_bot).
