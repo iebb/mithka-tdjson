@@ -2,28 +2,62 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 95b441409..4fe40d591 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1431 +1431 @@ generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/te
+@@ -1428,7 +1428,7 @@ include(GenerateExportHeader)
+ add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
+ target_link_libraries(tdjson PRIVATE tdjson_private)
+ generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
 -target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 +target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
-@@ -1439 +1439 @@ target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
+ if (APPLE)
+   set_target_properties(tdjson PROPERTIES LINK_FLAGS "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/tdclientjson_export_list")
+ endif()
+@@ -1436,7 +1436,7 @@ endif()
+ add_library(tdjson_static STATIC ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
+ target_link_libraries(tdjson_static PRIVATE tdjson_private)
+ target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
 -target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 +target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
+
+ # EXECUTABLES
+ if (EMSCRIPTEN)
 diff --git a/td/telegram/td_json_client.cpp b/td/telegram/td_json_client.cpp
-index 47d62bef2..9a29a5338 100644
+index 47d62bef2..0ad7b9708 100644
 --- a/td/telegram/td_json_client.cpp
 +++ b/td/telegram/td_json_client.cpp
-@@ -11,0 +12,2 @@
+@@ -9,7 +9,20 @@
+ #include "td/telegram/Client.h"
+ #include "td/telegram/ClientJson.h"
+
++#include "td/mtproto/AuthKey.h"
++#include "td/mtproto/DhHandshake.h"
++#include "tddb/td/db/DbKey.h"
 +#include "tddb/td/db/binlog/Binlog.h"
 +#include "tddb/td/db/BinlogKeyValue.h"
-@@ -12,0 +15,3 @@
++#include "td/utils/base64.h"
++#include "td/utils/misc.h"
+ #include "td/utils/Slice.h"
 +#include "td/utils/port/thread_local.h"
++#include "td/utils/tl_helpers.h"
 +
 +#include <cctype>
-@@ -52,0 +58,86 @@ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callbac
++#include <cstdio>
++#include <fstream>
++#include <limits>
++#include <memory>
+
+ void *td_json_client_create() {
+   return new td::ClientJson();
+@@ -50,3 +63,266 @@ const char *td_execute(const char *request) {
+ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callback_ptr callback) {
+   td::ClientManager::set_log_message_callback(max_verbosity_level, callback);
+ }
 +
 +namespace {
 +
 +static TD_THREAD_LOCAL td::string *mithka_last_error;
++static TD_THREAD_LOCAL td::string *mithka_last_session_string;
++constexpr td::int32 MITHKA_BINLOG_PMC_MAGIC = 0x4327;
++constexpr size_t MITHKA_SESSION_STRING_SIZE = 271;
 +
 +const char *set_mithka_last_error(td::string error) {
 +  td::init_thread_local<td::string>(mithka_last_error);
@@ -43,59 +77,250 @@ index 47d62bef2..9a29a5338 100644
 +  return true;
 +}
 +
-+bool is_mithka_session_backup_key(td::Slice key) {
-+  return key == "auth" || key == "auth_is_bot" || key == "my_id" || key == "server_time_difference" ||
-+         key == "dc_options_update" || key == "config_expire" || has_decimal_suffix(key, "auth") ||
-+         has_decimal_suffix(key, "salt") || has_decimal_suffix(key, "config_recovery_auth") ||
-+         has_decimal_suffix(key, "config_recovery_salt");
++td::Status copy_binlog_snapshot(td::Slice source_binlog_path, td::Slice snapshot_binlog_path) {
++  std::ifstream input(source_binlog_path.str(), std::ios::binary);
++  if (!input) {
++    return td::Status::Error("Failed to open source binlog for snapshot");
++  }
++  std::ofstream output(snapshot_binlog_path.str(), std::ios::binary | std::ios::trunc);
++  if (!output) {
++    return td::Status::Error("Failed to create source binlog snapshot");
++  }
++  output << input.rdbuf();
++  if (!output.good()) {
++    return td::Status::Error("Failed to write source binlog snapshot");
++  }
++  return td::Status::OK();
 +}
 +
-+td::Status write_compact_session_binlog(td::Slice source_binlog_path, td::Slice destination_binlog_path) {
++bool parse_decimal_uint64(td::Slice text, td::uint64 *value) {
++  if (text.empty()) {
++    return false;
++  }
++  td::uint64 result = 0;
++  for (auto c : text) {
++    if (!std::isdigit(static_cast<unsigned char>(c))) {
++      return false;
++    }
++    auto digit = static_cast<td::uint64>(c - '0');
++    if (result > (std::numeric_limits<td::uint64>::max() - digit) / 10) {
++      return false;
++    }
++    result = result * 10 + digit;
++  }
++  *value = result;
++  return true;
++}
++
++void append_uint32_be(td::string *data, td::uint32 value) {
++  data->push_back(static_cast<char>((value >> 24) & 0xff));
++  data->push_back(static_cast<char>((value >> 16) & 0xff));
++  data->push_back(static_cast<char>((value >> 8) & 0xff));
++  data->push_back(static_cast<char>(value & 0xff));
++}
++
++void append_uint64_be(td::string *data, td::uint64 value) {
++  for (int shift = 56; shift >= 0; shift -= 8) {
++    data->push_back(static_cast<char>((value >> shift) & 0xff));
++  }
++}
++
++td::uint32 read_uint32_be(td::Slice data, size_t offset) {
++  return (static_cast<td::uint32>(static_cast<unsigned char>(data[offset])) << 24) |
++         (static_cast<td::uint32>(static_cast<unsigned char>(data[offset + 1])) << 16) |
++         (static_cast<td::uint32>(static_cast<unsigned char>(data[offset + 2])) << 8) |
++         static_cast<td::uint32>(static_cast<unsigned char>(data[offset + 3]));
++}
++
++td::uint64 read_uint64_be(td::Slice data, size_t offset) {
++  td::uint64 result = 0;
++  for (size_t i = 0; i < 8; i++) {
++    result = (result << 8) | static_cast<unsigned char>(data[offset + i]);
++  }
++  return result;
++}
++
++td::Result<td::int32> find_session_dc_id(td::BinlogKeyValue<td::Binlog> *source) {
++  td::uint64 dc_id = 0;
++  auto main_dc_id = source->get("main_dc_id");
++  if (parse_decimal_uint64(main_dc_id, &dc_id) && dc_id > 0 && dc_id <= 255) {
++    auto auth_key_data = source->get(td::string("auth") + td::to_string(dc_id));
++    td::mtproto::AuthKey auth_key;
++    if (!auth_key_data.empty() && td::unserialize(auth_key, auth_key_data).is_ok() && auth_key.key().size() == 256) {
++      return static_cast<td::int32>(dc_id);
++    }
++  }
++
++  for (const auto &entry : source->get_all()) {
++    if (!has_decimal_suffix(entry.first, "auth")) {
++      continue;
++    }
++    auto suffix = entry.first.substr(4);
++    if (!parse_decimal_uint64(suffix, &dc_id) || dc_id == 0 || dc_id > 255) {
++      continue;
++    }
++    td::mtproto::AuthKey auth_key;
++    if (td::unserialize(auth_key, entry.second).is_ok() && auth_key.key().size() == 256) {
++      return static_cast<td::int32>(dc_id);
++    }
++  }
++  return td::Status::Error("Source binlog doesn't contain a valid auth key");
++}
++
++td::Status load_binlog_pmc_snapshot(td::Slice source_snapshot_path, td::BinlogKeyValue<td::Binlog> *source) {
++  source->external_init_begin(MITHKA_BINLOG_PMC_MAGIC);
++  td::Binlog source_binlog;
++  return source_binlog.init(source_snapshot_path.str(),
++                            [&](const td::BinlogEvent &event) {
++                              if (event.type_ == MITHKA_BINLOG_PMC_MAGIC) {
++                                source->external_init_handle(event);
++                              }
++                            },
++                            td::DbKey::raw_key("cucumber"));
++}
++
++td::Result<td::string> export_session_string(td::Slice source_binlog_path, td::int32 api_id, bool test_mode,
++                                             td::uint64 fallback_user_id) {
 +  if (source_binlog_path.empty()) {
 +    return td::Status::Error("Source binlog path is empty");
++  }
++  if (api_id <= 0) {
++    return td::Status::Error("API id is invalid");
++  }
++
++  auto source_snapshot_path = source_binlog_path.str() + ".mithka-session-source";
++  std::remove(source_snapshot_path.c_str());
++  TRY_STATUS(copy_binlog_snapshot(source_binlog_path, source_snapshot_path));
++
++  td::BinlogKeyValue<td::Binlog> source;
++  auto source_status = load_binlog_pmc_snapshot(source_snapshot_path, &source);
++  if (source_status.is_error()) {
++    std::remove(source_snapshot_path.c_str());
++    return source_status;
++  }
++  auto cleanup_source = [&] {
++    source.close();
++    std::remove(source_snapshot_path.c_str());
++  };
++  if (source.get("auth") != "ok") {
++    cleanup_source();
++    return td::Status::Error("Source binlog doesn't contain an authorized TDLib session");
++  }
++
++  td::uint64 user_id = fallback_user_id;
++  parse_decimal_uint64(source.get("my_id"), &user_id);
++  if (user_id == 0) {
++    cleanup_source();
++    return td::Status::Error("Source binlog doesn't contain a user id");
++  }
++
++  auto r_dc_id = find_session_dc_id(&source);
++  if (r_dc_id.is_error()) {
++    cleanup_source();
++    return r_dc_id.move_as_error();
++  }
++  auto dc_id = r_dc_id.move_as_ok();
++  auto auth_key_data = source.get(td::string("auth") + td::to_string(dc_id));
++  td::mtproto::AuthKey auth_key;
++  auto auth_key_status = td::unserialize(auth_key, auth_key_data);
++  if (auth_key_status.is_error() || auth_key.key().size() != 256) {
++    cleanup_source();
++    return td::Status::Error("Source binlog contains an invalid auth key");
++  }
++
++  td::string packed;
++  packed.reserve(MITHKA_SESSION_STRING_SIZE);
++  packed.push_back(static_cast<char>(dc_id & 0xff));
++  append_uint32_be(&packed, static_cast<td::uint32>(api_id));
++  packed.push_back(test_mode ? '\1' : '\0');
++  packed.append(auth_key.key());
++  append_uint64_be(&packed, user_id);
++  packed.push_back(source.get("auth_is_bot") == "true" ? '\1' : '\0');
++  if (packed.size() != MITHKA_SESSION_STRING_SIZE) {
++    cleanup_source();
++    return td::Status::Error("Failed to pack session string");
++  }
++
++  cleanup_source();
++  return td::base64url_encode(packed);
++}
++
++td::Status import_session_string(td::Slice session_string, td::Slice destination_binlog_path) {
++  if (session_string.empty()) {
++    return td::Status::Error("Session string is empty");
 +  }
 +  if (destination_binlog_path.empty()) {
 +    return td::Status::Error("Destination binlog path is empty");
 +  }
 +
-+  td::BinlogKeyValue<td::Binlog> source;
-+  TRY_STATUS(source.init(source_binlog_path.str()));
++  TRY_RESULT(decoded, td::base64url_decode(session_string));
++  if (decoded.size() != MITHKA_SESSION_STRING_SIZE) {
++    return td::Status::Error("Session string has invalid size");
++  }
 +
-+  if (source.get("auth") != "ok") {
-+    return td::Status::Error("Source binlog doesn't contain an authorized TDLib session");
++  td::Slice packed(decoded);
++  auto dc_id = static_cast<td::int32>(static_cast<unsigned char>(packed[0]));
++  auto api_id = read_uint32_be(packed, 1);
++  auto test_mode = packed[5] != '\0';
++  auto auth_key_bytes = packed.substr(6, 256).str();
++  auto user_id = read_uint64_be(packed, 262);
++  auto is_bot = packed[270] != '\0';
++  if (dc_id <= 0 || dc_id > 255) {
++    return td::Status::Error("Session string has invalid DC id");
 +  }
-+  if (source.get("my_id").empty()) {
-+    return td::Status::Error("Source binlog doesn't contain my_id");
++  if (api_id == 0) {
++    return td::Status::Error("Session string has invalid API id");
 +  }
++  if (user_id == 0) {
++    return td::Status::Error("Session string has invalid user id");
++  }
++  if (auth_key_bytes.size() != 256) {
++    return td::Status::Error("Session string has invalid auth key");
++  }
++
++  auto auth_key_id = static_cast<td::uint64>(td::mtproto::DhHandshake::calc_key_id(auth_key_bytes));
++  td::mtproto::AuthKey auth_key(auth_key_id, std::move(auth_key_bytes));
++  auth_key.set_auth_flag(true);
 +
 +  td::Binlog::destroy(destination_binlog_path).ignore();
++  auto destination_binlog = std::make_shared<td::Binlog>();
++  TRY_STATUS(destination_binlog->init(destination_binlog_path.str(), [](const td::BinlogEvent &) {},
++                                      td::DbKey::raw_key("cucumber")));
 +  td::BinlogKeyValue<td::Binlog> destination;
-+  TRY_STATUS(destination.init(destination_binlog_path.str()));
-+
-+  auto values = source.get_all();
-+  td::int32 copied_key_count = 0;
-+  for (const auto &entry : values) {
-+    if (is_mithka_session_backup_key(entry.first)) {
-+      destination.set(entry.first, entry.second);
-+      copied_key_count++;
-+    }
-+  }
-+  if (copied_key_count < 3) {
-+    return td::Status::Error("Source binlog doesn't contain enough session keys");
-+  }
-+
-+  destination.force_sync(td::Promise<td::Unit>(), "mithka_session_backup");
++  destination.external_init_begin(MITHKA_BINLOG_PMC_MAGIC);
++  destination.external_init_finish(std::move(destination_binlog));
++  destination.set("auth", "ok");
++  destination.set("my_id", td::to_string(user_id));
++  destination.set("auth_is_bot", is_bot ? "true" : "false");
++  destination.set("main_dc_id", td::to_string(dc_id));
++  destination.set(td::string("auth") + td::to_string(dc_id), td::serialize(auth_key));
++  destination.force_sync(td::Promise<td::Unit>(), "mithka_session_string_import");
 +  destination.close(td::Promise<td::Unit>());
-+  source.close();
++  static_cast<void>(test_mode);
 +  return td::Status::OK();
 +}
 +
 +}  // namespace
 +
-+int td_mithka_write_compact_session_binlog(const char *source_binlog_path, const char *destination_binlog_path) {
++const char *td_mithka_export_session_string(const char *source_binlog_path, int api_id, int test_mode,
++                                            long long user_id) {
 +  set_mithka_last_error(td::string());
-+  auto status = write_compact_session_binlog(td::Slice(source_binlog_path == nullptr ? "" : source_binlog_path),
-+                                             td::Slice(destination_binlog_path == nullptr ? "" : destination_binlog_path));
++  td::init_thread_local<td::string>(mithka_last_session_string);
++  auto result = export_session_string(td::Slice(source_binlog_path == nullptr ? "" : source_binlog_path), api_id,
++                                      test_mode != 0, user_id > 0 ? static_cast<td::uint64>(user_id) : 0);
++  if (result.is_error()) {
++    set_mithka_last_error(result.error().message().str());
++    mithka_last_session_string->clear();
++    return nullptr;
++  }
++  *mithka_last_session_string = result.move_as_ok();
++  return mithka_last_session_string->c_str();
++}
++
++int td_mithka_import_session_string(const char *session_string, const char *destination_binlog_path) {
++  set_mithka_last_error(td::string());
++  auto status = import_session_string(td::Slice(session_string == nullptr ? "" : session_string),
++                                      td::Slice(destination_binlog_path == nullptr ? "" : destination_binlog_path));
 +  if (status.is_error()) {
 +    set_mithka_last_error(status.message().str());
 +    return -1;
@@ -107,23 +332,36 @@ index 47d62bef2..9a29a5338 100644
 +  return set_mithka_last_error(mithka_last_error == nullptr ? td::string() : *mithka_last_error);
 +}
 diff --git a/td/telegram/td_json_client.h b/td/telegram/td_json_client.h
-index 7ea78bf4c..65b77fe68 100644
+index 7ea78bf4c..90049dd40 100644
 --- a/td/telegram/td_json_client.h
 +++ b/td/telegram/td_json_client.h
-@@ -87,0 +88,21 @@ TDJSON_EXPORT const char *td_execute(const char *request);
+@@ -85,6 +85,36 @@ TDJSON_EXPORT const char *td_receive(double timeout);
+  */
+ TDJSON_EXPORT const char *td_execute(const char *request);
+
 +/**
-+ * Writes a compact TDLib session binlog containing only authorization-related
-+ * persistent keys from an existing td.binlog.
++ * Exports a Pyrogram-compatible TDLib session string using format
++ * >BI?256sQ? (dc_id, api_id, test_mode, auth_key, user_id, is_bot).
 + *
 + * This is a Mithka-private extension. It is intentionally outside the public
 + * TDLib JSON API and is used only for local account session backup.
 + *
 + * \param[in] source_binlog_path Path to the source td.binlog.
-+ * \param[in] destination_binlog_path Path where the compact td.binlog will be written.
++ * \param[in] api_id Telegram client API id to store in the session string.
++ * \param[in] test_mode Whether the session uses Telegram test DCs.
++ * \return Session string on success; NULL on failure. Use td_mithka_last_error for details.
++ */
++TDJSON_EXPORT const char *td_mithka_export_session_string(const char *source_binlog_path, int api_id, int test_mode,
++                                                          long long user_id);
++
++/**
++ * Imports a Pyrogram-compatible TDLib session string into a fresh TDLib binlog.
++ *
++ * \param[in] session_string Session string using format >BI?256sQ?.
++ * \param[in] destination_binlog_path Path where td.binlog will be written.
 + * \return 0 on success; -1 on failure. Use td_mithka_last_error for details.
 + */
-+TDJSON_EXPORT int td_mithka_write_compact_session_binlog(const char *source_binlog_path,
-+                                                         const char *destination_binlog_path);
++TDJSON_EXPORT int td_mithka_import_session_string(const char *session_string, const char *destination_binlog_path);
 +
 +/**
 + * Returns the last Mithka-private TDLib extension error for the current thread.
@@ -132,10 +370,17 @@ index 7ea78bf4c..65b77fe68 100644
 + */
 +TDJSON_EXPORT const char *td_mithka_last_error();
 +
+ /**
+  * A type of callback function that will be called when a message is added to the internal TDLib log.
+  *
 diff --git a/tdclientjson_export_list b/tdclientjson_export_list
-index 51f370e6f..dce850970 100644
+index 51f370e6f..90f18f00a 100644
 --- a/tdclientjson_export_list
 +++ b/tdclientjson_export_list
-@@ -14,0 +15,2 @@ _td_set_log_message_callback
-+_td_mithka_write_compact_session_binlog
+@@ -12,3 +12,6 @@ _td_send
+ _td_receive
+ _td_execute
+ _td_set_log_message_callback
++_td_mithka_export_session_string
++_td_mithka_import_session_string
 +_td_mithka_last_error
