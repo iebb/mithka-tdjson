@@ -38,7 +38,7 @@ jobs:
           UPSTREAM_REF: ${{ inputs.telegram_ref || 'master' }}
           FORCE_BUILD: ${{ inputs.force || false }}
         run: |
-          upstream_sha="$(git ls-remote "$TELEGRAM_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+          upstream_sha="$(gh api "repos/TelegramMessenger/Telegram-iOS/commits/$UPSTREAM_REF" --jq .sha)"
           test -n "$upstream_sha"
           upstream_short_sha="${upstream_sha:0:12}"
           release_tag="tgvoip-telegram-ios-$upstream_short_sha"
