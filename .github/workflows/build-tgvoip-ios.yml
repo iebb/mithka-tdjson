@@ -1,0 +1,145 @@
+name: Build Telegram TgVoip iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      telegram_ref:
+        description: Telegram-iOS ref to build
+        required: false
+        default: master
+      force:
+        description: Rebuild even if the release tag already exists
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  TELEGRAM_REPO: https://github.com/TelegramMessenger/Telegram-iOS.git
+
+jobs:
+  prepare:
+    name: Resolve Telegram iOS
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+      upstream_short_sha: ${{ steps.resolve.outputs.upstream_short_sha }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve upstream commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ inputs.telegram_ref || 'master' }}
+          FORCE_BUILD: ${{ inputs.force || false }}
+        run: |
+          upstream_sha="$(git ls-remote "$TELEGRAM_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+          test -n "$upstream_sha"
+          upstream_short_sha="${upstream_sha:0:12}"
+          release_tag="tgvoip-telegram-ios-$upstream_short_sha"
+          should_build=true
+          if [ "$FORCE_BUILD" != "true" ] && gh release view "$release_tag" >/dev/null 2>&1; then
+            should_build=false
+          fi
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_short_sha=$upstream_short_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "Telegram iOS $UPSTREAM_REF -> $upstream_sha"
+          echo "Release tag: $release_tag"
+          echo "Should build: $should_build"
+
+  build:
+    name: TgVoipWebrtc XCFramework
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check out Telegram iOS recursively
+        uses: actions/checkout@v5
+        with:
+          repository: TelegramMessenger/Telegram-iOS
+          ref: ${{ needs.prepare.outputs.upstream_sha }}
+          path: build/Telegram-iOS
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install Telegram's Bazel version
+        id: bazel
+        run: |
+          bazel_version="$(python3 -c 'import json; print(json.load(open("build/Telegram-iOS/versions.json"))["bazel"].split(":")[0])')"
+          case "$(uname -m)" in
+            arm64) bazel_arch=arm64 ;;
+            x86_64) bazel_arch=x86_64 ;;
+            *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          bazel="$RUNNER_TEMP/bazel-$bazel_version-darwin-$bazel_arch"
+          curl -fL --retry 5 --retry-all-errors \
+            "https://github.com/bazelbuild/bazel/releases/download/$bazel_version/bazel-$bazel_version-darwin-$bazel_arch" \
+            -o "$bazel"
+          chmod +x "$bazel"
+          "$bazel" --version
+          echo "bazel=$bazel" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Bazel build outputs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel
+          key: tgvoip-${{ runner.arch }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-tgvoip-xcframework.sh') }}
+          restore-keys: |
+            tgvoip-${{ runner.arch }}-
+
+      - name: Build TgVoipWebrtc XCFramework
+        env:
+          BAZEL: ${{ steps.bazel.outputs.bazel }}
+        run: scripts/build-tgvoip-xcframework.sh build/Telegram-iOS
+
+      - name: Verify packaged slices
+        run: |
+          test -f dist/tgvoip-ios.xcframework.zip
+          unzip -q dist/tgvoip-ios.xcframework.zip -d "$RUNNER_TEMP/tgvoip"
+          test -f "$RUNNER_TEMP/tgvoip/TgVoipWebrtc.xcframework/Info.plist"
+          find "$RUNNER_TEMP/tgvoip/TgVoipWebrtc.xcframework" -name TgVoipWebrtc -type f -exec file {} \;
+
+      - name: Upload TgVoip asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgvoip-ios
+          path: dist/tgvoip-ios.xcframework.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish TgVoip release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download TgVoip asset
+        uses: actions/download-artifact@v4
+        with:
+          name: tgvoip-ios
+          path: release-assets
+
+      - name: Publish non-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: |
+          ls -lh release-assets
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --cleanup-tag --yes
+          fi
+          gh release create "$RELEASE_TAG" release-assets/tgvoip-ios.xcframework.zip \
+            --title "Telegram TgVoipWebrtc $UPSTREAM_SHA" \
+            --notes "Automated build of the TgVoipWebrtc XCFramework from TelegramMessenger/Telegram-iOS@$UPSTREAM_SHA." \
+            --latest=false

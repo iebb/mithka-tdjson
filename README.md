@@ -14,6 +14,7 @@ Current app setup expects:
 - `tdjson-android-armeabi-v7a.zip`
 - `tdjson-android-x86_64.zip`
 - `tdjson-ios.xcframework.zip`
+- `tgvoip-ios.xcframework.zip`
 
 Each Android zip should contain its ABI directory at the root:
 
@@ -29,6 +30,16 @@ tdjson.xcframework/
   Info.plist
   ios-arm64/
   ios-arm64_x86_64-simulator/
+```
+
+The TgVoip zip contains the official Telegram iOS group-call engine for arm64
+iOS devices and Apple-silicon simulators:
+
+```text
+TgVoipWebrtc.xcframework/
+  Info.plist
+  ios-arm64/
+  ios-arm64-simulator/
 ```
 
 ## Automated Upstream Sync
@@ -47,6 +58,20 @@ tdjson-ios.xcframework.zip
 ```
 
 Use the manual workflow with `force=true` to rebuild an existing upstream commit.
+
+## Telegram TgVoip iOS
+
+`.github/workflows/build-tgvoip-ios.yml` builds the same `TgVoipWebrtc` Bazel
+target used by the official Telegram iOS client. It publishes an immutable,
+non-latest release tagged `tgvoip-telegram-ios-<sha12>` with this asset:
+
+```text
+tgvoip-ios.xcframework.zip
+```
+
+The workflow is manual because the Mithka app pins the full release URL. Run it
+with `telegram_ref=master` for the current official client commit, or provide an
+exact Telegram iOS commit for a reproducible rebuild.
 
 ## Package Android Artifacts
 
