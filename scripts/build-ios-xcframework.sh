@@ -37,6 +37,7 @@ prepare_td_source() {
       git clone "$TD_REPO" "$UPSTREAM_TD_SRC"
     fi
     git -C "$UPSTREAM_TD_SRC" fetch --quiet origin "$TD_COMMIT"
+    git -C "$UPSTREAM_TD_SRC" reset --hard HEAD >/dev/null
     git -C "$UPSTREAM_TD_SRC" checkout --quiet "$TD_COMMIT"
     git -C "$UPSTREAM_TD_SRC" reset --hard "$TD_COMMIT" >/dev/null
   fi
