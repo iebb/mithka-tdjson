@@ -21,10 +21,10 @@ index 95b441409..4fe40d591 100644
  # EXECUTABLES
  if (EMSCRIPTEN)
 diff --git a/td/telegram/td_json_client.cpp b/td/telegram/td_json_client.cpp
-index 47d62bef2..2e42f0359 100644
+index 47d62bef2..e07e00db9 100644
 --- a/td/telegram/td_json_client.cpp
 +++ b/td/telegram/td_json_client.cpp
-@@ -9,7 +9,22 @@
+@@ -9,7 +9,21 @@
  #include "td/telegram/Client.h"
  #include "td/telegram/ClientJson.h"
  
@@ -41,13 +41,12 @@ index 47d62bef2..2e42f0359 100644
 +
 +#include <cctype>
 +#include <cstdio>
-+#include <fstream>
 +#include <limits>
 +#include <memory>
  
  void *td_json_client_create() {
    return new td::ClientJson();
-@@ -50,3 +65,309 @@ const char *td_execute(const char *request) {
+@@ -50,3 +64,323 @@ const char *td_execute(const char *request) {
  void td_set_log_message_callback(int max_verbosity_level, td_log_message_callback_ptr callback) {
    td::ClientManager::set_log_message_callback(max_verbosity_level, callback);
  }
@@ -78,17 +77,31 @@ index 47d62bef2..2e42f0359 100644
 +}
 +
 +td::Status copy_binlog_snapshot(td::Slice source_binlog_path, td::Slice snapshot_binlog_path) {
-+  std::ifstream input(source_binlog_path.str(), std::ios::binary);
++  auto source_path = source_binlog_path.str();
++  auto snapshot_path = snapshot_binlog_path.str();
++  std::unique_ptr<std::FILE, decltype(&std::fclose)> input(std::fopen(source_path.c_str(), "rb"), &std::fclose);
 +  if (!input) {
 +    return td::Status::Error("Failed to open source binlog for snapshot");
 +  }
-+  std::ofstream output(snapshot_binlog_path.str(), std::ios::binary | std::ios::trunc);
++  std::unique_ptr<std::FILE, decltype(&std::fclose)> output(std::fopen(snapshot_path.c_str(), "wb"), &std::fclose);
 +  if (!output) {
 +    return td::Status::Error("Failed to create source binlog snapshot");
 +  }
-+  output << input.rdbuf();
-+  if (!output.good()) {
-+    return td::Status::Error("Failed to write source binlog snapshot");
++  char buffer[64 * 1024];
++  while (true) {
++    auto size = std::fread(buffer, 1, sizeof(buffer), input.get());
++    if (size != 0 && std::fwrite(buffer, 1, size, output.get()) != size) {
++      return td::Status::Error("Failed to write source binlog snapshot");
++    }
++    if (size != sizeof(buffer)) {
++      if (std::ferror(input.get()) != 0) {
++        return td::Status::Error("Failed to read source binlog snapshot");
++      }
++      break;
++    }
++  }
++  if (std::fflush(output.get()) != 0) {
++    return td::Status::Error("Failed to flush source binlog snapshot");
 +  }
 +  return td::Status::OK();
 +}
