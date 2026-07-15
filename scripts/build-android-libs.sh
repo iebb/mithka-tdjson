@@ -44,6 +44,7 @@ prepare_td_source() {
   fi
   git -C "$TD_SRC" fetch --quiet origin "$TD_COMMIT"
   git -C "$TD_SRC" checkout --quiet "$TD_COMMIT"
+  git -C "$TD_SRC" reset --hard "$TD_COMMIT" >/dev/null
   TD_VERSION="$(sed -n 's/project(TDLib VERSION \([^ ]*\).*/\1/p' "$TD_SRC/CMakeLists.txt" | head -n 1)"
   if [[ -z "$TD_VERSION" ]]; then
     echo "error: could not read TDLib version from $TD_SRC" >&2

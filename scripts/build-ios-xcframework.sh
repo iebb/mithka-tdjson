@@ -38,6 +38,7 @@ prepare_td_source() {
     fi
     git -C "$UPSTREAM_TD_SRC" fetch --quiet origin "$TD_COMMIT"
     git -C "$UPSTREAM_TD_SRC" checkout --quiet "$TD_COMMIT"
+    git -C "$UPSTREAM_TD_SRC" reset --hard "$TD_COMMIT" >/dev/null
   fi
   if [[ ! -d "$TD_SRC" ]]; then
     echo "error: missing TDLib source at $TD_SRC" >&2
