@@ -2,7 +2,7 @@ name: Sync TDLib Artifacts
 
 on:
   schedule:
-    - cron: '23 3 * * 1'
+    - cron: '23 3 * * *'
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -10,10 +10,14 @@ on:
         required: false
         default: master
       force:
-        description: Rebuild even if the release tag already exists
+        description: Publish a new immutable rebuild even if this source release exists
         required: false
         type: boolean
         default: false
+
+concurrency:
+  group: sync-tdlib-artifacts
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -28,17 +32,14 @@ jobs:
     outputs:
       upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
       upstream_short_sha: ${{ steps.resolve.outputs.upstream_short_sha }}
-      release_tag: ${{ steps.resolve.outputs.release_tag }}
-      should_build: ${{ steps.resolve.outputs.should_build }}
+      tdlib_version: ${{ steps.metadata.outputs.tdlib_version }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      should_build: ${{ steps.metadata.outputs.should_build }}
     steps:
-      - uses: actions/checkout@v5
-
       - name: Resolve upstream commit
         id: resolve
         env:
-          GH_TOKEN: ${{ github.token }}
           UPSTREAM_REF: ${{ inputs.upstream_ref || 'master' }}
-          FORCE_BUILD: ${{ inputs.force || false }}
         run: |
           upstream_sha="$(git ls-remote "$TD_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
           if [ -z "$upstream_sha" ] && [[ "$UPSTREAM_REF" =~ ^[0-9a-f]{40}$ ]]; then
@@ -46,16 +47,44 @@ jobs:
           fi
           test -n "$upstream_sha"
           upstream_short_sha="${upstream_sha:0:12}"
-          release_tag="upstream-$upstream_short_sha"
-          should_build=true
-          if [ "$FORCE_BUILD" != "true" ] && gh release view "$release_tag" >/dev/null 2>&1; then
-            should_build=false
-          fi
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
           echo "upstream_short_sha=$upstream_short_sha" >> "$GITHUB_OUTPUT"
+          echo "TDLib $UPSTREAM_REF -> $upstream_sha"
+
+      - name: Check out TDLib metadata
+        uses: actions/checkout@v5
+        with:
+          repository: tdlib/td
+          ref: ${{ steps.resolve.outputs.upstream_sha }}
+          path: upstream-td
+          sparse-checkout: CMakeLists.txt
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve versioned immutable release
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_BUILD: ${{ inputs.force || false }}
+          UPSTREAM_SHA: ${{ steps.resolve.outputs.upstream_sha }}
+          UPSTREAM_SHORT_SHA: ${{ steps.resolve.outputs.upstream_short_sha }}
+        run: |
+          tdlib_version="$(sed -nE 's/^project\(TDLib VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' upstream-td/CMakeLists.txt)"
+          test -n "$tdlib_version"
+          base_release_tag="tdlib-$tdlib_version-$UPSTREAM_SHORT_SHA"
+          release_tag="$base_release_tag"
+          should_build=true
+          if gh release view "$base_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$FORCE_BUILD" = "true" ]; then
+              release_tag="$base_release_tag-rebuild-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            else
+              should_build=false
+            fi
+          fi
+          echo "tdlib_version=$tdlib_version" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
-          echo "TDLib $UPSTREAM_REF -> $upstream_sha"
+          echo "TDLib version: $tdlib_version"
+          echo "Upstream commit: $UPSTREAM_SHA"
           echo "Release tag: $release_tag"
           echo "Should build: $should_build"
 
@@ -86,7 +115,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/android-api23
-          key: android-${{ matrix.abi }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-android-libs.sh') }}
+          key: android-${{ matrix.abi }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-android-libs.sh', 'patches/*.patch') }}
           restore-keys: |
             android-${{ matrix.abi }}-
 
@@ -118,7 +147,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/ios-min13.0
-          key: ios-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-ios-xcframework.sh') }}
+          key: ios-${{ needs.prepare.outputs.upstream_short_sha }}-${{ hashFiles('scripts/build-ios-xcframework.sh', 'patches/*.patch') }}
           restore-keys: |
             ios-
 
@@ -152,12 +181,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          TDLIB_VERSION: ${{ needs.prepare.outputs.tdlib_version }}
           UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
         run: |
           ls -lh release-assets
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release delete "$RELEASE_TAG" --cleanup-tag --yes
-          fi
           gh release create "$RELEASE_TAG" release-assets/*.zip \
-            --title "TDLib $UPSTREAM_SHA" \
-            --notes "Automated build of tdjson artifacts from tdlib/td@$UPSTREAM_SHA."
+            --title "TDLib $TDLIB_VERSION ($UPSTREAM_SHA)" \
+            --notes "Immutable tdjson artifacts built from tdlib/td@$UPSTREAM_SHA (TDLib $TDLIB_VERSION). Older releases are retained for reproducible Mithka builds." \
+            --latest

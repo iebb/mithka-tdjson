@@ -44,9 +44,10 @@ TgVoipWebrtc.xcframework/
 
 ## Automated Upstream Sync
 
-`.github/workflows/sync-upstream.yml` runs weekly and can also be started
-manually. It resolves the current `tdlib/td` `master` commit and publishes a
-release tagged `upstream-<sha12>` only when that tag does not already exist.
+`.github/workflows/sync-upstream.yml` runs daily and can also be started
+manually. It resolves the current `tdlib/td` `master` commit, reads the TDLib
+version from upstream, and publishes an immutable release tagged
+`tdlib-<version>-<sha12>` only when that exact source release does not exist.
 
 The release publishes all assets consumed by the Mithka app CI:
 
@@ -57,7 +58,11 @@ tdjson-android-x86_64.zip
 tdjson-ios.xcframework.zip
 ```
 
-Use the manual workflow with `force=true` to rebuild an existing upstream commit.
+Mithka pins this exact release tag, so historical app builds keep using their
+original TDLib binaries. Releases are never deleted by the sync workflow. A
+manual `force=true` run publishes a separate
+`tdlib-<version>-<sha12>-rebuild-<run-id>-<attempt>` release instead of replacing
+the original artifacts.
 
 ## Telegram TgVoip iOS
 
