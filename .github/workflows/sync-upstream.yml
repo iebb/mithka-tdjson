@@ -41,6 +41,9 @@ jobs:
           FORCE_BUILD: ${{ inputs.force || false }}
         run: |
           upstream_sha="$(git ls-remote "$TD_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+          if [ -z "$upstream_sha" ] && [[ "$UPSTREAM_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            upstream_sha="$UPSTREAM_REF"
+          fi
           test -n "$upstream_sha"
           upstream_short_sha="${upstream_sha:0:12}"
           release_tag="upstream-$upstream_short_sha"
