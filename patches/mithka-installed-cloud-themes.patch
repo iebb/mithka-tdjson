@@ -1,0 +1,136 @@
+diff --git a/td/generate/scheme/td_api.tl b/td/generate/scheme/td_api.tl
+index 4dac6c8b1..a77ed1b44 100644
+--- a/td/generate/scheme/td_api.tl
++++ b/td/generate/scheme/td_api.tl
+@@ -3914,6 +3914,15 @@ builtInThemeArctic = BuiltInTheme;
+ //@outgoing_message_accent_color Accent color of outgoing messages in ARGB format
+ themeSettings base_theme:BuiltInTheme accent_color:int32 background:background outgoing_message_fill:BackgroundFill animate_outgoing_message_fill:Bool outgoing_message_accent_color:int32 = ThemeSettings;
+
++//@description Contains metadata for a cloud theme saved by the current user
++//@slug Unique theme name used in https://t.me/addtheme links
++//@title Human-readable theme title
++installedCloudTheme slug:string title:string = InstalledCloudTheme;
++
++//@description Contains cloud themes saved by the current user
++//@themes Saved cloud themes
++installedCloudThemes themes:vector<installedCloudTheme> = InstalledCloudThemes;
++
+
+ //@class RichText @description Describes a formatted text object
+
+@@ -13026,6 +13035,10 @@ deleteChatBackground chat_id:int53 restore_previous:Bool = Ok;
+ //@limit The maximum number of chat themes to return
+ getGiftChatThemes offset:string limit:int32 = GiftChatThemes;
+
++//@description Returns cloud themes saved by the current user
++//@theme_format Theme format supported by the client; must be ios, android, macos, or tdesktop
++getInstalledCloudThemes theme_format:string = InstalledCloudThemes;
++
+ //@description Changes the chat theme. Supported only in private and secret chats @chat_id Chat identifier @theme New chat theme; pass null to return the default theme
+ setChatTheme chat_id:int53 theme:InputChatTheme = Ok;
+
+diff --git a/td/telegram/Requests.cpp b/td/telegram/Requests.cpp
+index d87c1867e..d59fddc43 100644
+--- a/td/telegram/Requests.cpp
++++ b/td/telegram/Requests.cpp
+@@ -5668,6 +5668,13 @@ void Requests::on_request(uint64 id, td_api::getGiftChatThemes &request) {
+   td_->theme_manager_->get_unique_gift_chat_themes(request.offset_, request.limit_, std::move(promise));
+ }
+
++void Requests::on_request(uint64 id, td_api::getInstalledCloudThemes &request) {
++  CHECK_IS_USER();
++  CLEAN_INPUT_STRING(request.theme_format_);
++  CREATE_REQUEST_PROMISE();
++  td_->theme_manager_->get_installed_cloud_themes(request.theme_format_, std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, td_api::setChatTheme &request) {
+   CHECK_IS_USER();
+   CREATE_OK_REQUEST_PROMISE();
+diff --git a/td/telegram/Requests.h b/td/telegram/Requests.h
+index 2002602d9..f68b5e7a8 100644
+--- a/td/telegram/Requests.h
++++ b/td/telegram/Requests.h
+@@ -1050,6 +1050,8 @@ class Requests {
+
+   void on_request(uint64 id, td_api::getGiftChatThemes &request);
+
++  void on_request(uint64 id, td_api::getInstalledCloudThemes &request);
++
+   void on_request(uint64 id, td_api::setChatTheme &request);
+
+   void on_request(uint64 id, td_api::setChatDraftMessage &request);
+diff --git a/td/telegram/ThemeManager.cpp b/td/telegram/ThemeManager.cpp
+index 8ee993c8f..95600eaaa 100644
+--- a/td/telegram/ThemeManager.cpp
++++ b/td/telegram/ThemeManager.cpp
+@@ -67,6 +67,43 @@ class GetChatThemesQuery final : public Td::ResultHandler {
+   }
+ };
+
++class GetInstalledCloudThemesQuery final : public Td::ResultHandler {
++  Promise<td_api::object_ptr<td_api::installedCloudThemes>> promise_;
++
++ public:
++  explicit GetInstalledCloudThemesQuery(Promise<td_api::object_ptr<td_api::installedCloudThemes>> &&promise)
++      : promise_(std::move(promise)) {
++  }
++
++  void send(const string &theme_format) {
++    send_query(G()->net_query_creator().create(telegram_api::account_getThemes(theme_format, 0)));
++  }
++
++  void on_result(BufferSlice packet) final {
++    auto result_ptr = fetch_result<telegram_api::account_getThemes>(packet);
++    if (result_ptr.is_error()) {
++      return on_error(result_ptr.move_as_error());
++    }
++    auto themes_ptr = result_ptr.move_as_ok();
++    auto result = td_api::make_object<td_api::installedCloudThemes>();
++    if (themes_ptr->get_id() == telegram_api::account_themes::ID) {
++      auto themes = telegram_api::move_object_as<telegram_api::account_themes>(themes_ptr);
++      for (auto &theme : themes->themes_) {
++        if (theme->for_chat_ || theme->slug_.empty()) {
++          continue;
++        }
++        result->themes_.push_back(
++            td_api::make_object<td_api::installedCloudTheme>(std::move(theme->slug_), std::move(theme->title_)));
++      }
++    }
++    promise_.set_value(std::move(result));
++  }
++
++  void on_error(Status status) final {
++    promise_.set_error(std::move(status));
++  }
++};
++
+ class GetPeerColorsQuery final : public Td::ResultHandler {
+   Promise<telegram_api::object_ptr<telegram_api::help_PeerColors>> promise_;
+
+@@ -805,6 +842,11 @@ void ThemeManager::reload_chat_themes() {
+   td_->create_handler<GetChatThemesQuery>(std::move(request_promise))->send(chat_themes_.hash);
+ }
+
++void ThemeManager::get_installed_cloud_themes(
++    const string &theme_format, Promise<td_api::object_ptr<td_api::installedCloudThemes>> &&promise) {
++  td_->create_handler<GetInstalledCloudThemesQuery>(std::move(promise))->send(theme_format);
++}
++
+ void ThemeManager::on_get_chat_themes(Result<telegram_api::object_ptr<telegram_api::account_Themes>> result) {
+   if (result.is_error()) {
+     return;
+diff --git a/td/telegram/ThemeManager.h b/td/telegram/ThemeManager.h
+index 4b5a2c7a9..79c10af2d 100644
+--- a/td/telegram/ThemeManager.h
++++ b/td/telegram/ThemeManager.h
+@@ -54,6 +54,9 @@ class ThemeManager final : public Actor {
+   void get_unique_gift_chat_themes(const string &offset, int32 limit,
+                                    Promise<td_api::object_ptr<td_api::giftChatThemes>> &&promise);
+
++  void get_installed_cloud_themes(const string &theme_format,
++                                  Promise<td_api::object_ptr<td_api::installedCloudThemes>> &&promise);
++
+   void get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const;
+
+  private:

@@ -63,6 +63,17 @@ apply_mithka_patches() {
     echo "error: failed to apply Mithka TDLib session backup patch" >&2
     exit 1
   fi
+
+  patch="$ROOT/patches/mithka-installed-cloud-themes.patch"
+  if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
+    echo "==> Applying Mithka installed cloud themes patch"
+    git -C "$TD_SRC" apply --unidiff-zero "$patch"
+  elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
+    echo "==> Mithka installed cloud themes patch already applied"
+  else
+    echo "error: failed to apply Mithka installed cloud themes patch" >&2
+    exit 1
+  fi
 }
 
 build_openssl() {
