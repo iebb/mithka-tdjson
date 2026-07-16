@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TD_REPO="${TD_REPO:-https://github.com/tdlib/td.git}"
-TD_COMMIT="${TD_COMMIT:-a8f21f5230172634becc1739050ef23ecd6ea291}"
+TD_COMMIT="${TD_COMMIT:-a17f87c4cff7b90b278d12b91ba0614383aaee82}"
 OPENSSL_VERSION="${OPENSSL_VERSION:-3.3.2}"
 ANDROID_API="${ANDROID_API:-23}"
 BUILD_ROOT="${BUILD_ROOT:-$ROOT/build/android-api$ANDROID_API}"
@@ -56,27 +56,22 @@ prepare_td_source() {
 }
 
 apply_mithka_patches() {
-  local patch="$ROOT/patches/mithka-session-backup.patch"
-  if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
-    echo "==> Applying Mithka TDLib session backup patch"
-    git -C "$TD_SRC" apply --unidiff-zero "$patch"
-  elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
-    echo "==> Mithka TDLib session backup patch already applied"
-  else
-    echo "error: failed to apply Mithka TDLib session backup patch" >&2
-    exit 1
-  fi
-
-  patch="$ROOT/patches/mithka-installed-cloud-themes.patch"
-  if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
-    echo "==> Applying Mithka installed cloud themes patch"
-    git -C "$TD_SRC" apply --unidiff-zero "$patch"
-  elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
-    echo "==> Mithka installed cloud themes patch already applied"
-  else
-    echo "error: failed to apply Mithka installed cloud themes patch" >&2
-    exit 1
-  fi
+  local patch
+  for patch in \
+    "$ROOT/patches/mithka-session-backup.patch" \
+    "$ROOT/patches/mithka-rich-message-files.patch" \
+    "$ROOT/patches/mithka-installed-cloud-themes.patch" \
+    "$ROOT/patches/mithka-transfer-boost.patch"; do
+    if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
+      echo "==> Applying $(basename "$patch")"
+      git -C "$TD_SRC" apply --unidiff-zero "$patch"
+    elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
+      echo "==> $(basename "$patch") already applied"
+    else
+      echo "error: failed to apply $(basename "$patch")" >&2
+      exit 1
+    fi
+  done
 }
 
 build_openssl() {

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TD_REPO="${TD_REPO:-https://github.com/tdlib/td.git}"
-TD_COMMIT="${TD_COMMIT:-a8f21f5230172634becc1739050ef23ecd6ea291}"
+TD_COMMIT="${TD_COMMIT:-a17f87c4cff7b90b278d12b91ba0614383aaee82}"
 OPENSSL_SRC_DIR="${OPENSSL_SRC_DIR:-/Users/ieb/Vibe/Nagram-iOS/submodules/openssl}"
 OPENSSL_VERSION="${OPENSSL_VERSION:-1.1.1d}"
 OPENSSL_TARBALL="${OPENSSL_TARBALL:-$OPENSSL_SRC_DIR/openssl-$OPENSSL_VERSION.tar.gz}"
@@ -56,27 +56,22 @@ prepare_td_source() {
 
 apply_mithka_patches() {
   local src="$1"
-  local patch="$ROOT/patches/mithka-session-backup.patch"
-  if git -C "$src" apply --unidiff-zero --check "$patch"; then
-    echo "==> Applying Mithka TDLib session backup patch"
-    git -C "$src" apply --unidiff-zero "$patch"
-  elif git -C "$src" apply --unidiff-zero --reverse --check "$patch"; then
-    echo "==> Mithka TDLib session backup patch already applied"
-  else
-    echo "error: failed to apply Mithka TDLib session backup patch" >&2
-    exit 1
-  fi
-
-  patch="$ROOT/patches/mithka-installed-cloud-themes.patch"
-  if git -C "$src" apply --unidiff-zero --check "$patch"; then
-    echo "==> Applying Mithka installed cloud themes patch"
-    git -C "$src" apply --unidiff-zero "$patch"
-  elif git -C "$src" apply --unidiff-zero --reverse --check "$patch"; then
-    echo "==> Mithka installed cloud themes patch already applied"
-  else
-    echo "error: failed to apply Mithka installed cloud themes patch" >&2
-    exit 1
-  fi
+  local patch
+  for patch in \
+    "$ROOT/patches/mithka-session-backup.patch" \
+    "$ROOT/patches/mithka-rich-message-files.patch" \
+    "$ROOT/patches/mithka-installed-cloud-themes.patch" \
+    "$ROOT/patches/mithka-transfer-boost.patch"; do
+    if git -C "$src" apply --unidiff-zero --check "$patch"; then
+      echo "==> Applying $(basename "$patch")"
+      git -C "$src" apply --unidiff-zero "$patch"
+    elif git -C "$src" apply --unidiff-zero --reverse --check "$patch"; then
+      echo "==> $(basename "$patch") already applied"
+    else
+      echo "error: failed to apply $(basename "$patch")" >&2
+      exit 1
+    fi
+  done
 }
 
 patch_openssl_for_sim_arm64() {
