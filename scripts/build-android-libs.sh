@@ -77,6 +77,17 @@ apply_mithka_patches() {
     echo "error: failed to apply Mithka installed cloud themes patch" >&2
     exit 1
   fi
+
+  patch="$ROOT/patches/mithka-transfer-boost.patch"
+  if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
+    echo "==> Applying Mithka transfer boost patch"
+    git -C "$TD_SRC" apply --unidiff-zero "$patch"
+  elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
+    echo "==> Mithka transfer boost patch already applied"
+  else
+    echo "error: failed to apply Mithka transfer boost patch" >&2
+    exit 1
+  fi
 }
 
 build_openssl() {

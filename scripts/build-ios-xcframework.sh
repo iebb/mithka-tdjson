@@ -77,6 +77,17 @@ apply_mithka_patches() {
     echo "error: failed to apply Mithka installed cloud themes patch" >&2
     exit 1
   fi
+
+  patch="$ROOT/patches/mithka-transfer-boost.patch"
+  if git -C "$src" apply --unidiff-zero --check "$patch"; then
+    echo "==> Applying Mithka transfer boost patch"
+    git -C "$src" apply --unidiff-zero "$patch"
+  elif git -C "$src" apply --unidiff-zero --reverse --check "$patch"; then
+    echo "==> Mithka transfer boost patch already applied"
+  else
+    echo "error: failed to apply Mithka transfer boost patch" >&2
+    exit 1
+  fi
 }
 
 patch_openssl_for_sim_arm64() {
