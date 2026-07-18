@@ -59,8 +59,8 @@ apply_mithka_patches() {
   local patch
   for patch in \
     "$ROOT/patches/mithka-session-backup.patch" \
-    "$ROOT/patches/mithka-rich-message-files.patch" \
     "$ROOT/patches/mithka-installed-cloud-themes.patch" \
+    "$ROOT/patches/mithka-community-full-info.patch" \
     "$ROOT/patches/mithka-transfer-boost.patch"; do
     if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
       echo "==> Applying $(basename "$patch")"

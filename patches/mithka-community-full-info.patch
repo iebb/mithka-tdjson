@@ -1,0 +1,166 @@
+diff --git a/td/generate/scheme/td_api.tl b/td/generate/scheme/td_api.tl
+--- a/td/generate/scheme/td_api.tl
++++ b/td/generate/scheme/td_api.tl
+@@ -2300,6 +2300,17 @@ communityMemberStatusBanned = CommunityMemberStatus;
+ //@permissions Actions that non-administrator community members are allowed to take in the community
+ community id:int53 have_access:Bool name:string photo:chatPhotoInfo date:int32 status:CommunityMemberStatus permissions:communityPermissions = Community;
+ 
++//@description Describes a chat linked to a community
++//@chat_id Chat identifier
++//@can_view_history True, if the current user can view the chat history without joining the chat
++//@has_visibility True, if the server provided an explicit visibility setting
++//@is_visible The explicit visibility setting, if available
++communityPeerInfo chat_id:int53 can_view_history:Bool has_visibility:Bool is_visible:Bool = CommunityPeerInfo;
++
++//@description Contains full information about the chats linked to a community
++//@peers Chats linked to the community
++communityFullInfo peers:vector<communityPeerInfo> = CommunityFullInfo;
++
+ 
+ //@description Contains description of user rating
+ //@level The level of the user; may be negative
+@@ -11388,6 +11399,9 @@ getSupergroup supergroup_id:int53 = Supergroup;
+ //@description Returns full information about a supergroup or a channel by its identifier, cached for up to 1 minute @supergroup_id Supergroup or channel identifier
+ getSupergroupFullInfo supergroup_id:int53 = SupergroupFullInfo;
+ 
++//@description Returns chats linked to a community @community_id Community identifier
++getCommunityFullInfo community_id:int53 = CommunityFullInfo;
++
+ //@description Returns information about a secret chat by its identifier. This is an offline method @secret_chat_id Secret chat identifier
+ getSecretChat secret_chat_id:int32 = SecretChat;
+ 
+diff --git a/td/telegram/CommunityManager.cpp b/td/telegram/CommunityManager.cpp
+--- a/td/telegram/CommunityManager.cpp
++++ b/td/telegram/CommunityManager.cpp
+@@ -11,6 +11,7 @@
+ #include "td/telegram/ChannelType.h"
+ #include "td/telegram/ChatManager.h"
+ #include "td/telegram/DialogId.h"
++#include "td/telegram/DialogManager.h"
+ #include "td/telegram/DialogPhoto.hpp"
+ #include "td/telegram/Global.h"
+ #include "td/telegram/logevent/LogEvent.h"
+@@ -18,6 +19,7 @@
+ #include "td/telegram/PhotoSize.h"
+ #include "td/telegram/Td.h"
+ #include "td/telegram/TdDb.h"
++#include "td/telegram/UserManager.h"
+ 
+ #include "td/db/binlog/BinlogEvent.h"
+ #include "td/db/binlog/BinlogHelper.h"
+@@ -69,6 +71,55 @@ class GetCommunitiesQuery final : public Td::ResultHandler {
+   }
+ };
+ 
++class GetCommunityFullInfoQuery final : public Td::ResultHandler {
++  Promise<td_api::object_ptr<td_api::communityFullInfo>> promise_;
++
++ public:
++  explicit GetCommunityFullInfoQuery(Promise<td_api::object_ptr<td_api::communityFullInfo>> &&promise)
++      : promise_(std::move(promise)) {
++  }
++
++  void send(telegram_api::object_ptr<telegram_api::InputChannel> &&input_community) {
++    CHECK(input_community != nullptr);
++    send_query(G()->net_query_creator().create(telegram_api::channels_getFullChannel(std::move(input_community))));
++  }
++
++  void on_result(BufferSlice packet) final {
++    auto result_ptr = fetch_result<telegram_api::channels_getFullChannel>(packet);
++    if (result_ptr.is_error()) {
++      return on_error(result_ptr.move_as_error());
++    }
++
++    auto result = result_ptr.move_as_ok();
++    td_->user_manager_->on_get_users(std::move(result->users_), "GetCommunityFullInfoQuery");
++    td_->chat_manager_->on_get_chats(std::move(result->chats_), "GetCommunityFullInfoQuery");
++    if (result->full_chat_->get_id() != telegram_api::communityFull::ID) {
++      return promise_.set_error(500, "Unexpected community full info");
++    }
++
++    auto community_full = move_tl_object_as<telegram_api::communityFull>(result->full_chat_);
++    vector<td_api::object_ptr<td_api::communityPeerInfo>> peers;
++    peers.reserve(community_full->linked_peers_.size());
++    for (auto &peer : community_full->linked_peers_) {
++      auto dialog_id = DialogId(peer->peer_);
++      if (!dialog_id.is_valid()) {
++        LOG(ERROR) << "Receive invalid community peer";
++        continue;
++      }
++      td_->dialog_manager_->force_create_dialog(dialog_id, "GetCommunityFullInfoQuery", true);
++      auto has_visibility = (peer->flags_ & 1) != 0;
++      peers.push_back(td_api::make_object<td_api::communityPeerInfo>(
++          td_->dialog_manager_->get_chat_id_object(dialog_id, "communityPeerInfo"), peer->can_view_history_,
++          has_visibility, peer->visible_));
++    }
++    promise_.set_value(td_api::make_object<td_api::communityFullInfo>(std::move(peers)));
++  }
++
++  void on_error(Status status) final {
++    promise_.set_error(std::move(status));
++  }
++};
++
+ template <class StorerT>
+ void CommunityManager::Community::store(StorerT &storer) const {
+   using td::store;
+@@ -647,6 +698,18 @@ td_api::object_ptr<td_api::community> CommunityManager::get_community_object(Com
+   return get_community_object(community_id, get_community(community_id));
+ }
+ 
++void CommunityManager::get_community_full_info(
++    CommunityId community_id, Promise<td_api::object_ptr<td_api::communityFullInfo>> &&promise) {
++  if (!have_accessible_community(community_id)) {
++    return promise.set_error(400, "Community not found");
++  }
++  auto input_community = get_input_community(community_id);
++  if (input_community == nullptr) {
++    return promise.set_error(400, "Community not found");
++  }
++  td_->create_handler<GetCommunityFullInfoQuery>(std::move(promise))->send(std::move(input_community));
++}
++
+ td_api::object_ptr<td_api::community> CommunityManager::get_community_object(CommunityId community_id,
+                                                                              const Community *c) const {
+   if (c == nullptr) {
+diff --git a/td/telegram/CommunityManager.h b/td/telegram/CommunityManager.h
+--- a/td/telegram/CommunityManager.h
++++ b/td/telegram/CommunityManager.h
+@@ -51,6 +51,9 @@ class CommunityManager final : public Actor {
+ 
+   td_api::object_ptr<td_api::community> get_community_object(CommunityId community_id) const;
+ 
++  void get_community_full_info(CommunityId community_id,
++                               Promise<td_api::object_ptr<td_api::communityFullInfo>> &&promise);
++
+   telegram_api::object_ptr<telegram_api::InputChannel> get_input_community(CommunityId community_id) const;
+ 
+   void on_binlog_community_event(BinlogEvent &&event);
+diff --git a/td/telegram/Requests.cpp b/td/telegram/Requests.cpp
+--- a/td/telegram/Requests.cpp
++++ b/td/telegram/Requests.cpp
+@@ -2611,6 +2611,12 @@ void Requests::on_request(uint64 id, const td_api::getSupergroupFullInfo &reques
+   CREATE_REQUEST(GetSupergroupFullInfoRequest, request.supergroup_id_);
+ }
+ 
++void Requests::on_request(uint64 id, const td_api::getCommunityFullInfo &request) {
++  CHECK_IS_USER();
++  CREATE_REQUEST_PROMISE();
++  td_->community_manager_->get_community_full_info(CommunityId(request.community_id_), std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, const td_api::getSecretChat &request) {
+   CREATE_REQUEST(GetSecretChatRequest, request.secret_chat_id_);
+ }
+diff --git a/td/telegram/Requests.h b/td/telegram/Requests.h
+--- a/td/telegram/Requests.h
++++ b/td/telegram/Requests.h
+@@ -264,6 +264,8 @@ class Requests {
+ 
+   void on_request(uint64 id, const td_api::getSupergroupFullInfo &request);
+ 
++  void on_request(uint64 id, const td_api::getCommunityFullInfo &request);
++
+   void on_request(uint64 id, const td_api::getSecretChat &request);
+ 
+   void on_request(uint64 id, const td_api::getChat &request);
