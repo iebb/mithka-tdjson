@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
     paths:
+      - .gitattributes
       - .github/workflows/sync-upstream.yml
       - patches/**
       - scripts/**
@@ -92,6 +93,7 @@ jobs:
           } | sha256sum | awk '{print $1}')"
           patchset_short_sha="${patchset_sha:0:12}"
           build_definition_sha="$({
+            sha256sum .gitattributes
             sha256sum .github/workflows/sync-upstream.yml
             sha256sum scripts/apply-mithka-patches.sh
             sha256sum scripts/build-android-libs.sh

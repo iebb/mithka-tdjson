@@ -20,6 +20,7 @@ if [[ ! -f "$SERIES" ]]; then
 fi
 
 while IFS= read -r patch_name; do
+  patch_name="${patch_name%$'\r'}"
   [[ -n "$patch_name" ]] || continue
   [[ "$patch_name" != \#* ]] || continue
   patch_file="$ROOT/patches/$patch_name"

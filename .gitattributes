@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.patch text eol=lf
+patches/series text eol=lf
+.github/workflows/*.yml text eol=lf
