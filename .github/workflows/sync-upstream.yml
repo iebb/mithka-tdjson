@@ -24,7 +24,7 @@ on:
 
 concurrency:
   group: sync-tdlib-artifacts
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -189,7 +189,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/android-api23
-          key: android-${{ matrix.abi }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ needs.prepare.outputs.build_definition_sha }}
+          key: android-${{ matrix.abi }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ needs.prepare.outputs.patchset_sha }}-${{ needs.prepare.outputs.build_definition_sha }}
 
       - name: Build tdjson Android asset
         env:
@@ -219,7 +219,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/ios-min13.0
-          key: ios-${{ needs.prepare.outputs.upstream_short_sha }}-${{ needs.prepare.outputs.build_definition_sha }}
+          key: ios-${{ needs.prepare.outputs.upstream_short_sha }}-${{ needs.prepare.outputs.patchset_sha }}-${{ needs.prepare.outputs.build_definition_sha }}
 
       - name: Build tdjson iOS asset
         env:
@@ -289,7 +289,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/desktop-${{ matrix.platform }}
-          key: desktop-${{ matrix.platform }}-${{ matrix.architecture }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ needs.prepare.outputs.build_definition_sha }}
+          key: desktop-${{ matrix.platform }}-${{ matrix.architecture }}-${{ needs.prepare.outputs.upstream_short_sha }}-${{ needs.prepare.outputs.patchset_sha }}-${{ needs.prepare.outputs.build_definition_sha }}
 
       - name: Build patched desktop tdjson
         shell: bash

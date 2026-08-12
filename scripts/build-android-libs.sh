@@ -45,14 +45,14 @@ prepare_td_source() {
   git -C "$TD_SRC" fetch --quiet origin "$TD_COMMIT"
   git -C "$TD_SRC" reset --hard HEAD >/dev/null
   git -C "$TD_SRC" clean -fdx >/dev/null
-  git -C "$TD_SRC" checkout --quiet "$TD_COMMIT"
-  git -C "$TD_SRC" reset --hard "$TD_COMMIT" >/dev/null
+  git -C "$TD_SRC" checkout --detach --quiet FETCH_HEAD
+  git -C "$TD_SRC" reset --hard FETCH_HEAD >/dev/null
   TD_VERSION="$(sed -n 's/project(TDLib VERSION \([^ ]*\).*/\1/p' "$TD_SRC/CMakeLists.txt" | head -n 1)"
   if [[ -z "$TD_VERSION" ]]; then
     echo "error: could not read TDLib version from $TD_SRC" >&2
     exit 1
   fi
-  echo "==> TDLib $TD_VERSION ($TD_COMMIT)"
+  echo "==> TDLib $TD_VERSION ($(git -C "$TD_SRC" rev-parse HEAD))"
 }
 
 apply_mithka_patches() {

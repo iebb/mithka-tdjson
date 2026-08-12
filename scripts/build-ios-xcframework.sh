@@ -39,8 +39,8 @@ prepare_td_source() {
     git -C "$UPSTREAM_TD_SRC" fetch --quiet origin "$TD_COMMIT"
     git -C "$UPSTREAM_TD_SRC" reset --hard HEAD >/dev/null
     git -C "$UPSTREAM_TD_SRC" clean -fdx >/dev/null
-    git -C "$UPSTREAM_TD_SRC" checkout --quiet "$TD_COMMIT"
-    git -C "$UPSTREAM_TD_SRC" reset --hard "$TD_COMMIT" >/dev/null
+    git -C "$UPSTREAM_TD_SRC" checkout --detach --quiet FETCH_HEAD
+    git -C "$UPSTREAM_TD_SRC" reset --hard FETCH_HEAD >/dev/null
   fi
   if [[ ! -d "$TD_SRC" ]]; then
     echo "error: missing TDLib source at $TD_SRC" >&2
@@ -51,7 +51,11 @@ prepare_td_source() {
     echo "error: could not read TDLib version from $TD_SRC" >&2
     exit 1
   fi
-  echo "==> TDLib $TD_VERSION ($TD_COMMIT)"
+  resolved_td_commit="$TD_COMMIT"
+  if git -C "$TD_SRC" rev-parse --verify HEAD >/dev/null 2>&1; then
+    resolved_td_commit="$(git -C "$TD_SRC" rev-parse HEAD)"
+  fi
+  echo "==> TDLib $TD_VERSION ($resolved_td_commit)"
 }
 
 apply_mithka_patches() {
