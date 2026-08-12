@@ -1,0 +1,5 @@
+# Applied in order. Rich-message media is now provided by upstream TDLib.
+mithka-session-backup.patch
+mithka-installed-cloud-themes.patch
+mithka-community-full-info.patch
+mithka-transfer-boost.patch

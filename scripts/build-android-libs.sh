@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TD_REPO="${TD_REPO:-https://github.com/tdlib/td.git}"
-TD_COMMIT="${TD_COMMIT:-a17f87c4cff7b90b278d12b91ba0614383aaee82}"
+TD_COMMIT="${TD_COMMIT:-master}"
 OPENSSL_VERSION="${OPENSSL_VERSION:-3.3.2}"
 ANDROID_API="${ANDROID_API:-23}"
 BUILD_ROOT="${BUILD_ROOT:-$ROOT/build/android-api$ANDROID_API}"
@@ -56,22 +56,7 @@ prepare_td_source() {
 }
 
 apply_mithka_patches() {
-  local patch
-  for patch in \
-    "$ROOT/patches/mithka-session-backup.patch" \
-    "$ROOT/patches/mithka-installed-cloud-themes.patch" \
-    "$ROOT/patches/mithka-community-full-info.patch" \
-    "$ROOT/patches/mithka-transfer-boost.patch"; do
-    if git -C "$TD_SRC" apply --unidiff-zero --check "$patch"; then
-      echo "==> Applying $(basename "$patch")"
-      git -C "$TD_SRC" apply --unidiff-zero "$patch"
-    elif git -C "$TD_SRC" apply --unidiff-zero --reverse --check "$patch"; then
-      echo "==> $(basename "$patch") already applied"
-    else
-      echo "error: failed to apply $(basename "$patch")" >&2
-      exit 1
-    fi
-  done
+  "$ROOT/scripts/apply-mithka-patches.sh" "$TD_SRC"
 }
 
 build_openssl() {

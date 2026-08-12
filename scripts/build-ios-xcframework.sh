@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TD_REPO="${TD_REPO:-https://github.com/tdlib/td.git}"
-TD_COMMIT="${TD_COMMIT:-a17f87c4cff7b90b278d12b91ba0614383aaee82}"
+TD_COMMIT="${TD_COMMIT:-master}"
 OPENSSL_SRC_DIR="${OPENSSL_SRC_DIR:-/Users/ieb/Vibe/Nagram-iOS/submodules/openssl}"
 OPENSSL_VERSION="${OPENSSL_VERSION:-1.1.1d}"
 OPENSSL_TARBALL="${OPENSSL_TARBALL:-$OPENSSL_SRC_DIR/openssl-$OPENSSL_VERSION.tar.gz}"
@@ -56,22 +56,7 @@ prepare_td_source() {
 
 apply_mithka_patches() {
   local src="$1"
-  local patch
-  for patch in \
-    "$ROOT/patches/mithka-session-backup.patch" \
-    "$ROOT/patches/mithka-installed-cloud-themes.patch" \
-    "$ROOT/patches/mithka-community-full-info.patch" \
-    "$ROOT/patches/mithka-transfer-boost.patch"; do
-    if git -C "$src" apply --unidiff-zero --check "$patch"; then
-      echo "==> Applying $(basename "$patch")"
-      git -C "$src" apply --unidiff-zero "$patch"
-    elif git -C "$src" apply --unidiff-zero --reverse --check "$patch"; then
-      echo "==> $(basename "$patch") already applied"
-    else
-      echo "error: failed to apply $(basename "$patch")" >&2
-      exit 1
-    fi
-  done
+  "$ROOT/scripts/apply-mithka-patches.sh" "$src"
 }
 
 patch_openssl_for_sim_arm64() {

@@ -14,7 +14,11 @@ Current app setup expects:
 - `tdjson-android-armeabi-v7a.zip`
 - `tdjson-android-x86_64.zip`
 - `tdjson-ios.xcframework.zip`
-- `tgvoip-ios.xcframework.zip`
+- `tdjson-linux-x64.zip`
+- `tdjson-macos-universal.zip`
+- `tdjson-windows-x64.zip`
+- `tdjson-manifest.json`
+- `SHA256SUMS`
 
 Each Android zip should contain its ABI directory at the root:
 
@@ -29,25 +33,30 @@ The iOS zip should contain `tdjson.xcframework` at its root:
 tdjson.xcframework/
   Info.plist
   ios-arm64/
-  ios-arm64_x86_64-simulator/
-```
-
-The TgVoip zip contains the official Telegram iOS group-call engine for arm64
-iOS devices and Apple-silicon simulators:
-
-```text
-TgVoipWebrtc.xcframework/
-  Info.plist
-  ios-arm64/
   ios-arm64-simulator/
 ```
 
+Each desktop zip contains one runtime library at its root:
+
+```text
+libtdjson.so
+libtdjson.dylib
+tdjson.dll
+```
+
+`tdjson-manifest.json` records the exact upstream commit, packaging-workflow
+commit, patch-set digest, archive digests, and digest of every packaged file.
+`SHA256SUMS` provides a standard checksum list for all release files.
+
 ## Automated Upstream Sync
 
-`.github/workflows/sync-upstream.yml` runs daily and can also be started
-manually. It resolves the current `tdlib/td` `master` commit, reads the TDLib
-version from upstream, and publishes an immutable release tagged
-`tdlib-<version>-<sha12>` only when that exact source release does not exist.
+.github/workflows/sync-upstream.yml runs daily, after relevant packaging changes,
+and on manual request. It resolves the current `tdlib/td` `master` commit, reads
+the TDLib version from upstream, validates the ordered Mithka patch series, and
+publishes an immutable release tagged
+`tdlib-<version>-<sha12>-mithka-<patch-sha12>-build-<build-sha12>-v<schema>` only
+when that exact source, patch set, build definition, and artifact schema do not
+already have a complete release.
 
 The release publishes all assets consumed by the Mithka app CI:
 
@@ -56,13 +65,17 @@ tdjson-android-arm64-v8a.zip
 tdjson-android-armeabi-v7a.zip
 tdjson-android-x86_64.zip
 tdjson-ios.xcframework.zip
+tdjson-linux-x64.zip
+tdjson-macos-universal.zip
+tdjson-windows-x64.zip
+tdjson-manifest.json
+SHA256SUMS
 ```
 
 Mithka pins this exact release tag, so historical app builds keep using their
 original TDLib binaries. Releases are never deleted by the sync workflow. A
-manual `force=true` run publishes a separate
-`tdlib-<version>-<sha12>-rebuild-<run-id>-<attempt>` release instead of replacing
-the original artifacts.
+manual `force=true` run publishes a separate `-rebuild-<run-id>-<attempt>`
+release instead of replacing the original artifacts.
 
 ## Telegram TgVoip iOS
 
@@ -95,6 +108,20 @@ scripts/package-ios-xcframework.sh /path/to/mithka/ios/tdjson/tdjson.xcframework
 ```
 
 Then upload `dist/tdjson-ios.xcframework.zip` to a GitHub Release.
+
+## Package Desktop Artifacts
+
+The sync workflow builds these automatically. A local diagnostic build can use:
+
+```sh
+scripts/build-desktop-lib.sh linux dist/libtdjson.so
+scripts/package-desktop-lib.sh \
+  dist/libtdjson.so tdjson-linux-x64.zip dist
+```
+
+`TD_COMMIT` defaults to upstream `master`; set it to a full TDLib commit for a
+reproducible local build. Published releases always use the full commit resolved
+by the workflow.
 
 ## License
 
