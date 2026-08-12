@@ -102,10 +102,12 @@ build_openssl() {
 
   pushd "$src" >/dev/null
   export CROSS_COMPILE=""
-  export CROSS_TOP="$(xcode-select --print-path)/Platforms/iPhoneOS.platform/Developer"
+  CROSS_TOP="$(xcode-select --print-path)/Platforms/iPhoneOS.platform/Developer"
+  export CROSS_TOP
   export CROSS_SDK="iPhoneOS.sdk"
   if [[ "$name" == *simulator ]]; then
-    export CROSS_TOP="$(xcode-select --print-path)/Platforms/iPhoneSimulator.platform/Developer"
+    CROSS_TOP="$(xcode-select --print-path)/Platforms/iPhoneSimulator.platform/Developer"
+    export CROSS_TOP
     export CROSS_SDK="iPhoneSimulator.sdk"
   fi
   ./Configure "$target" no-shared no-asm no-ssl3 no-comp no-hw no-engine no-async no-tests "--prefix=$out"
@@ -209,6 +211,21 @@ xcodebuild -create-xcframework \
   -framework "$BUILD_ROOT/ios-arm64/tdjson.framework" \
   -framework "$BUILD_ROOT/ios-arm64_x86_64-simulator/tdjson.framework" \
   -output "$XCFRAMEWORK"
+
+for binary in \
+  "$XCFRAMEWORK/ios-arm64/tdjson.framework/tdjson" \
+  "$XCFRAMEWORK/ios-arm64-simulator/tdjson.framework/tdjson"; do
+  test -s "$binary"
+  symbols="$(nm -gU "$binary")"
+  for symbol in \
+    _td_create_client_id \
+    _td_mithka_export_session_string \
+    _td_mithka_import_session_string \
+    _td_mithka_last_error \
+    _td_mithka_set_transfer_boost; do
+    grep " $symbol$" <<<"$symbols" >/dev/null
+  done
+done
 
 (
   cd "$OUT_DIR"

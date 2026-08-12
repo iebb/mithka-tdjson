@@ -140,6 +140,16 @@ build_tdjson() {
   cp "$td_build/libtdjson.so" "$package_root/$abi/libtdjson.so"
   strip_bin="$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip | head -n 1)"
   "$strip_bin" --strip-unneeded "$package_root/$abi/libtdjson.so"
+  nm_bin="${strip_bin%/llvm-strip}/llvm-nm"
+  symbols="$("$nm_bin" -D --defined-only "$package_root/$abi/libtdjson.so")"
+  for symbol in \
+    td_create_client_id \
+    td_mithka_export_session_string \
+    td_mithka_import_session_string \
+    td_mithka_last_error \
+    td_mithka_set_transfer_boost; do
+    grep " $symbol$" <<<"$symbols" >/dev/null
+  done
 
   mkdir -p "$OUT_DIR"
   (
