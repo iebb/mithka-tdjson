@@ -234,8 +234,15 @@ case "$PLATFORM" in
       x64) cmake_architecture=x64 ;;
       arm64) cmake_architecture=ARM64 ;;
     esac
+    # GitHub's windows-11-arm image moved from Visual Studio 2022 to Visual
+    # Studio 2026 in September 2026, so the generator has to follow whichever
+    # Visual Studio generation the runner image provides.
+    vs_generator='Visual Studio 17 2022'
+    if [[ -d "$(cygpath -u 'C:\Program Files\Microsoft Visual Studio\18')" ]]; then
+      vs_generator='Visual Studio 18 2026'
+    fi
     cmake -S "$TD_SOURCE" -B "$TD_BUILD" \
-      -G 'Visual Studio 17 2022' -A "$cmake_architecture" \
+      -G "$vs_generator" -A "$cmake_architecture" \
       -DCMAKE_TOOLCHAIN_FILE="$vcpkg_toolchain" \
       -DVCPKG_TARGET_TRIPLET="$ARCHITECTURE-windows-static" \
       -DTD_ENABLE_LTO=OFF
