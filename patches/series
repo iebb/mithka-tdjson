@@ -1,5 +1,6 @@
 # Applied in order. Rich-message media is now provided by upstream TDLib.
+# Community full info comes from upstream td_api::getCommunityFullInfo since
+# tdlib/td 4c04264789a8 replaced loadCommunityFullInfo.
 mithka-session-backup.patch
 mithka-installed-cloud-themes.patch
-mithka-community-full-info.patch
 mithka-transfer-boost.patch
