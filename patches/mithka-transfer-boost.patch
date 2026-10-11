@@ -1,37 +1,70 @@
 diff --git a/td/telegram/files/FileDownloadManager.cpp b/td/telegram/files/FileDownloadManager.cpp
-index 096f0ab29..7e1145812 100644
+index 096f0ab..7e11458 100644
 --- a/td/telegram/files/FileDownloadManager.cpp
 +++ b/td/telegram/files/FileDownloadManager.cpp
-@@ -8,0 +9 @@
+@@ -6,6 +6,7 @@
+ //
+ #include "td/telegram/files/FileDownloadManager.h"
+ 
 +#include "td/telegram/files/FileLoaderUtils.h"
-@@ -27,0 +29,6 @@ void FileDownloadManager::start_up() {
+ #include "td/telegram/Global.h"
+ #include "td/telegram/net/NetQueryDispatcher.h"
+ 
+@@ -25,6 +26,12 @@ void FileDownloadManager::start_up() {
+   if (G()->get_option_boolean("is_premium") || G()->get_option_integer("session_count") > 1) {
+     max_download_resource_limit_ *= 8;
+   }
 +  const auto chunk_size = get_mithka_download_chunk_size();
 +  const auto parallelism = get_mithka_download_parallelism();
 +  if (chunk_size > 0 && parallelism > 0) {
 +    max_download_resource_limit_ =
 +        max(max_download_resource_limit_, static_cast<int64>(chunk_size) * parallelism);
 +  }
+ }
+ 
+ ActorOwn<ResourceManager> &FileDownloadManager::get_download_resource_manager(bool is_small, DcId dc_id) {
 diff --git a/td/telegram/files/FileDownloader.cpp b/td/telegram/files/FileDownloader.cpp
-index 001fa91f6..35ddaacf0 100644
+index 268412c..1cf31e8 100644
 --- a/td/telegram/files/FileDownloader.cpp
 +++ b/td/telegram/files/FileDownloader.cpp
-@@ -525,0 +526,4 @@ void FileDownloader::start_up() {
+@@ -526,6 +526,10 @@ void FileDownloader::start_up() {
+       }
+     }
+   }
 +  const auto configured_part_size = get_mithka_download_chunk_size();
 +  if (part_size == 0 && size_ > (1 << 20) && configured_part_size > 0) {
 +    part_size = configured_part_size;
 +  }
-@@ -604,0 +609,4 @@ Status FileDownloader::do_loop() {
+   try_release_fd();
+ 
+   auto ready_parts = bitmask.as_vector();
+@@ -605,6 +609,10 @@ Status FileDownloader::do_loop() {
+   }
+ 
+   while (true) {
 +    const auto max_pending_parts = get_mithka_download_parallelism();
 +    if (max_pending_parts > 0 && part_map_.size() >= static_cast<size_t>(max_pending_parts)) {
 +      break;
 +    }
+     if (resource_state_.unused() < narrow_cast<int64>(parts_manager_.get_part_size())) {
+       VLOG(file_loader) << "Receive only " << resource_state_.unused() << " resource";
+       break;
 diff --git a/td/telegram/files/FileLoaderUtils.cpp b/td/telegram/files/FileLoaderUtils.cpp
-index 02aa5e4c4..9def75551 100644
+index 02aa5e4..10edb4a 100644
 --- a/td/telegram/files/FileLoaderUtils.cpp
 +++ b/td/telegram/files/FileLoaderUtils.cpp
-@@ -23,0 +24 @@
+@@ -22,6 +22,7 @@
+ #include "td/utils/StringBuilder.h"
+ 
+ #include <tuple>
 +#include <atomic>
-@@ -31,0 +33,20 @@ namespace {
+ 
+ namespace td {
+ 
+@@ -29,6 +30,26 @@ int VERBOSITY_NAME(file_loader) = VERBOSITY_NAME(DEBUG);
+ 
+ namespace {
+ 
 +std::atomic<int32> mithka_download_chunk_size{0};
 +std::atomic<int32> mithka_download_parallelism{0};
 +std::atomic<int32> mithka_upload_chunk_size{0};
@@ -52,7 +85,13 @@ index 02aa5e4c4..9def75551 100644
 +  return parallelism <= 0 ? 0 : td::min(parallelism, 24);
 +}
 +
-@@ -84,0 +106,26 @@ StringBuilder &operator<<(StringBuilder &sb, const Ext &ext) {
+ Result<std::pair<FileFd, string>> try_create_new_file(CSlice path, CSlice file_name) {
+   LOG(DEBUG) << "Trying to create new file \"" << file_name << "\" in the directory \"" << path << '"';
+   auto name = PSTRING() << path << file_name;
+@@ -82,6 +103,32 @@ StringBuilder &operator<<(StringBuilder &sb, const Ext &ext) {
+ }
+ }  // namespace
+ 
 +void set_mithka_transfer_boost(int32 download_chunk_size, int32 download_parallelism, int32 upload_chunk_size,
 +                               int32 upload_parallelism) {
 +  mithka_download_chunk_size.store(normalize_mithka_part_size(download_chunk_size, 1 << 20),
@@ -79,11 +118,17 @@ index 02aa5e4c4..9def75551 100644
 +  return mithka_upload_parallelism.load(std::memory_order_relaxed);
 +}
 +
+ Result<std::pair<FileFd, string>> open_temp_file(FileType file_type) {
+   auto pmc = G()->td_db()->get_binlog_pmc();
+   // TODO: CAS?
 diff --git a/td/telegram/files/FileLoaderUtils.h b/td/telegram/files/FileLoaderUtils.h
-index fdc1a7ea7..841f083b2 100644
+index fdc1a7e..841f083 100644
 --- a/td/telegram/files/FileLoaderUtils.h
 +++ b/td/telegram/files/FileLoaderUtils.h
-@@ -24,0 +25,11 @@ extern int VERBOSITY_NAME(file_loader);
+@@ -22,6 +22,17 @@ namespace td {
+ 
+ extern int VERBOSITY_NAME(file_loader);
+ 
 +void set_mithka_transfer_boost(int32 download_chunk_size, int32 download_parallelism, int32 upload_chunk_size,
 +                               int32 upload_parallelism);
 +
@@ -95,13 +140,25 @@ index fdc1a7ea7..841f083b2 100644
 +
 +int32 get_mithka_upload_parallelism();
 +
+ Result<std::pair<FileFd, string>> open_temp_file(FileType file_type) TD_WARN_UNUSED_RESULT;
+ 
+ Result<string> create_from_temp(FileType file_type, CSlice temp_path, CSlice name) TD_WARN_UNUSED_RESULT;
 diff --git a/td/telegram/files/FileUploadManager.cpp b/td/telegram/files/FileUploadManager.cpp
-index 5a85f65a6..bece430a3 100644
+index 5a85f65..bece430 100644
 --- a/td/telegram/files/FileUploadManager.cpp
 +++ b/td/telegram/files/FileUploadManager.cpp
-@@ -8,0 +9 @@
+@@ -6,6 +6,7 @@
+ //
+ #include "td/telegram/files/FileUploadManager.h"
+ 
 +#include "td/telegram/files/FileLoaderUtils.h"
-@@ -22,0 +24,7 @@ void FileUploadManager::start_up() {
+ #include "td/telegram/Global.h"
+ 
+ #include "td/utils/common.h"
+@@ -20,8 +21,15 @@ FileUploadManager::FileUploadManager(unique_ptr<Callback> callback, ActorShared<
+ 
+ void FileUploadManager::start_up() {
+   constexpr int64 MAX_UPLOAD_RESOURCE_LIMIT = 4 << 20;
 +  auto max_upload_resource_limit = MAX_UPLOAD_RESOURCE_LIMIT;
 +  const auto chunk_size = get_mithka_upload_chunk_size();
 +  const auto parallelism = get_mithka_upload_parallelism();
@@ -109,40 +166,70 @@ index 5a85f65a6..bece430a3 100644
 +    max_upload_resource_limit =
 +        max(max_upload_resource_limit, static_cast<int64>(max(chunk_size, 512 << 10)) * parallelism);
 +  }
-@@ -24 +32 @@ void FileUploadManager::start_up() {
+   upload_resource_manager_ = create_actor<ResourceManager>(
 -      "UploadResourceManager", MAX_UPLOAD_RESOURCE_LIMIT,
 +      "UploadResourceManager", max_upload_resource_limit,
+       !G()->keep_media_order() ? ResourceManager::Mode::Greedy : ResourceManager::Mode::Baseline);
+ }
+ 
 diff --git a/td/telegram/files/FileUploader.cpp b/td/telegram/files/FileUploader.cpp
-index 9e2c652d8..6d00cc08b 100644
+index 9e2c652..6d00cc0 100644
 --- a/td/telegram/files/FileUploader.cpp
 +++ b/td/telegram/files/FileUploader.cpp
-@@ -94,0 +95,4 @@ void FileUploader::start_up() {
+@@ -92,6 +92,10 @@ void FileUploader::start_up() {
+   LOG(DEBUG) << "Init file uploader for " << remote_ << " with offset = " << offset << " and part size = " << part_size;
+ 
+   auto expected_size = max(local_size_, expected_size_);
 +  const auto configured_part_size = get_mithka_upload_chunk_size();
 +  if (part_size == 0 && configured_part_size > 0) {
 +    part_size = big_flag_ ? max(configured_part_size, 512 << 10) : configured_part_size;
 +  }
-@@ -398,0 +403,4 @@ Status FileUploader::do_loop() {
+ 
+   // Two cases when FILE_UPLOAD_RESTART will happen
+   // 1. File is ready, size is final. But there are more uploaded parts than size of the file
+@@ -396,6 +400,10 @@ Status FileUploader::do_loop() {
+     try_release_fd();
+   };
+   while (true) {
 +    const auto max_pending_parts = get_mithka_upload_parallelism();
 +    if (max_pending_parts > 0 && part_map_.size() >= static_cast<size_t>(max_pending_parts)) {
 +      break;
 +    }
+     if (resource_state_.unused() < narrow_cast<int64>(parts_manager_.get_part_size())) {
+       VLOG(file_loader) << "Receive only " << resource_state_.unused() << " resource";
+       break;
 diff --git a/td/telegram/td_json_client.cpp b/td/telegram/td_json_client.cpp
-index e07e00db9..5a8f10946 100644
+index e07e00d..e188dac 100644
 --- a/td/telegram/td_json_client.cpp
 +++ b/td/telegram/td_json_client.cpp
-@@ -8,0 +9 @@
+@@ -8,6 +8,7 @@
+ 
+ #include "td/telegram/Client.h"
+ #include "td/telegram/ClientJson.h"
 +#include "td/telegram/files/FileLoaderUtils.h"
-@@ -67,0 +69,5 @@ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callbac
+ 
+ #include "td/mtproto/AuthKey.h"
+ #include "td/mtproto/DhHandshake.h"
+@@ -65,6 +66,11 @@ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callbac
+   td::ClientManager::set_log_message_callback(max_verbosity_level, callback);
+ }
+ 
 +void td_mithka_set_transfer_boost(int download_chunk_size, int download_parallelism, int upload_chunk_size,
 +                                  int upload_parallelism) {
 +  td::set_mithka_transfer_boost(download_chunk_size, download_parallelism, upload_chunk_size, upload_parallelism);
 +}
 +
+ namespace {
+ 
+ static TD_THREAD_LOCAL td::string *mithka_last_error;
 diff --git a/td/telegram/td_json_client.h b/td/telegram/td_json_client.h
-index b8b504f77..177d0ace5 100644
+index b8b504f..177d0ac 100644
 --- a/td/telegram/td_json_client.h
 +++ b/td/telegram/td_json_client.h
-@@ -118,0 +119,7 @@ TDJSON_EXPORT const char *td_mithka_last_error();
+@@ -116,6 +116,13 @@ TDJSON_EXPORT int td_mithka_import_session_string(const char *session_string, co
+  */
+ TDJSON_EXPORT const char *td_mithka_last_error();
+ 
 +/**
 + * Configures Mithka's transfer chunk sizes and parallel request limits before creating a TDLib client.
 + * A zero chunk size or parallelism disables boost for that transfer direction.
@@ -150,9 +237,18 @@ index b8b504f77..177d0ace5 100644
 +TDJSON_EXPORT void td_mithka_set_transfer_boost(int download_chunk_size, int download_parallelism,
 +                                                int upload_chunk_size, int upload_parallelism);
 +
+ /**
+  * A type of callback function that will be called when a message is added to the internal TDLib log.
+  *
 diff --git a/tdclientjson_export_list b/tdclientjson_export_list
-index 90f18f00a..e98725f00 100644
+index 90f18f0..e98725f 100644
 --- a/tdclientjson_export_list
 +++ b/tdclientjson_export_list
-@@ -14,0 +15 @@ _td_set_log_message_callback
+@@ -12,6 +12,7 @@ _td_send
+ _td_receive
+ _td_execute
+ _td_set_log_message_callback
 +_td_mithka_set_transfer_boost
+ _td_mithka_export_session_string
+ _td_mithka_import_session_string
+ _td_mithka_last_error

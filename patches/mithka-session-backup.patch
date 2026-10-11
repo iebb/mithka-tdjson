@@ -1,18 +1,33 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 7ebc9480a..e59df9f30 100644
+index be96875..552c1a2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1458 +1458 @@ generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/te
+@@ -1458,7 +1458,7 @@ include(GenerateExportHeader)
+ add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
+ target_link_libraries(tdjson PRIVATE tdjson_private)
+ generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
 -target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 +target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
-@@ -1466 +1466 @@ target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
+ if (APPLE)
+   set_target_properties(tdjson PROPERTIES LINK_FLAGS "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/tdclientjson_export_list")
+ endif()
+@@ -1466,7 +1466,7 @@ endif()
+ add_library(tdjson_static STATIC ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
+ target_link_libraries(tdjson_static PRIVATE tdjson_private)
+ target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
 -target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 +target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tddb>)
+ 
+ # EXECUTABLES
+ if (EMSCRIPTEN)
 diff --git a/td/telegram/td_json_client.cpp b/td/telegram/td_json_client.cpp
-index 47d62bef2..e07e00db9 100644
+index 47d62be..e07e00d 100644
 --- a/td/telegram/td_json_client.cpp
 +++ b/td/telegram/td_json_client.cpp
-@@ -11,0 +12,7 @@
+@@ -9,7 +9,21 @@
+ #include "td/telegram/Client.h"
+ #include "td/telegram/ClientJson.h"
+ 
 +#include "td/mtproto/AuthKey.h"
 +#include "td/mtproto/DhHandshake.h"
 +#include "tddb/td/db/DbKey.h"
@@ -20,7 +35,7 @@ index 47d62bef2..e07e00db9 100644
 +#include "tddb/td/db/BinlogKeyValue.h"
 +#include "td/utils/base64.h"
 +#include "td/utils/misc.h"
-@@ -12,0 +20,7 @@
+ #include "td/utils/Slice.h"
 +#include "td/utils/port/thread_local.h"
 +#include "td/utils/tl_helpers.h"
 +
@@ -28,7 +43,13 @@ index 47d62bef2..e07e00db9 100644
 +#include <cstdio>
 +#include <limits>
 +#include <memory>
-@@ -52,0 +67,320 @@ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callbac
+ 
+ void *td_json_client_create() {
+   return new td::ClientJson();
+@@ -50,3 +64,323 @@ const char *td_execute(const char *request) {
+ void td_set_log_message_callback(int max_verbosity_level, td_log_message_callback_ptr callback) {
+   td::ClientManager::set_log_message_callback(max_verbosity_level, callback);
+ }
 +
 +namespace {
 +
@@ -350,10 +371,13 @@ index 47d62bef2..e07e00db9 100644
 +  return set_mithka_last_error(mithka_last_error == nullptr ? td::string() : *mithka_last_error);
 +}
 diff --git a/td/telegram/td_json_client.h b/td/telegram/td_json_client.h
-index 7ea78bf4c..b8b504f77 100644
+index 7ea78bf..b8b504f 100644
 --- a/td/telegram/td_json_client.h
 +++ b/td/telegram/td_json_client.h
-@@ -87,0 +88,31 @@ TDJSON_EXPORT const char *td_execute(const char *request);
+@@ -85,6 +85,37 @@ TDJSON_EXPORT const char *td_receive(double timeout);
+  */
+ TDJSON_EXPORT const char *td_execute(const char *request);
+ 
 +/**
 + * Exports a Pyrogram-compatible TDLib session string using format
 + * >BI?256sQ? (dc_id, api_id, test_mode, auth_key, user_id, is_bot).
@@ -385,11 +409,17 @@ index 7ea78bf4c..b8b504f77 100644
 + */
 +TDJSON_EXPORT const char *td_mithka_last_error();
 +
+ /**
+  * A type of callback function that will be called when a message is added to the internal TDLib log.
+  *
 diff --git a/tdclientjson_export_list b/tdclientjson_export_list
-index 51f370e6f..90f18f00a 100644
+index 51f370e..90f18f0 100644
 --- a/tdclientjson_export_list
 +++ b/tdclientjson_export_list
-@@ -14,0 +15,3 @@ _td_set_log_message_callback
+@@ -12,3 +12,6 @@ _td_send
+ _td_receive
+ _td_execute
+ _td_set_log_message_callback
 +_td_mithka_export_session_string
 +_td_mithka_import_session_string
 +_td_mithka_last_error
