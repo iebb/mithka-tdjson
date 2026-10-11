@@ -162,10 +162,27 @@ jobs:
           # non-overlapping upstream edits instead of failing on moved lines.
           fetch-depth: 0
 
+      - name: Install patch validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gperf libssl-dev zlib1g-dev
+
+      - name: Test patch application safety
+        run: python3 -m unittest discover -s tests -v
+
       - name: Apply current patch series
         run: |
           scripts/apply-mithka-patches.sh upstream-td
           git -C upstream-td diff --check
+
+      - name: Validate patched schema and source placement
+        run: |
+          cmake -S upstream-td -B patch-check -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DTD_ENABLE_LTO=OFF
+          cmake --build patch-check --target prepare_cross_compiling --parallel 2
+          python3 scripts/check-patched-source.py patch-check
 
   build-android:
     name: Android ${{ matrix.abi }}
