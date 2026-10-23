@@ -1,0 +1,137 @@
+name: Build tdjson HarmonyOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: TDLib ref (sha or branch) to build
+        required: false
+        # The Mithka patch series is anchored to the TDLib 1.8.68 commit of the
+        # latest sync-upstream release; override with master to test drift.
+        default: c15d3f5a5de6e3ba5839822c451152e5e18bb700
+      force:
+        description: Rebuild even if the release tag already exists
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  TD_REPO: https://github.com/tdlib/td.git
+
+jobs:
+  prepare:
+    name: Resolve upstream TDLib
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+      upstream_short_sha: ${{ steps.resolve.outputs.upstream_short_sha }}
+      tdlib_version: ${{ steps.resolve.outputs.tdlib_version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve upstream commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          FORCE_BUILD: ${{ inputs.force || false }}
+        run: |
+          upstream_sha="$(git ls-remote "$TD_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+          if [ -z "$upstream_sha" ] && [[ "$UPSTREAM_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            upstream_sha="$UPSTREAM_REF"
+          fi
+          test -n "$upstream_sha"
+          upstream_short_sha="${upstream_sha:0:12}"
+          tdlib_version="$( \
+            curl -fsSL "https://raw.githubusercontent.com/tdlib/td/$upstream_sha/CMakeLists.txt" \
+            | sed -nE 's/^project\(TDLib VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
+          test -n "$tdlib_version"
+          release_tag="tdjson-ohos-$tdlib_version-$upstream_short_sha"
+          should_build=true
+          if [ "$FORCE_BUILD" != "true" ] && gh release view "$release_tag" >/dev/null 2>&1; then
+            should_build=false
+          fi
+          {
+            echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+            echo "upstream_short_sha=$upstream_short_sha" >> "$GITHUB_OUTPUT"
+            echo "tdlib_version=$tdlib_version" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+            echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          }
+          echo "TDLib $UPSTREAM_REF -> $upstream_sha ($tdlib_version)"
+          echo "Release tag: $release_tag (build: $should_build)"
+
+  build:
+    name: ohos arm64
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/niuhuan/harmony-next-flutter-pipeline-docker:latest
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends clang gperf libssl-dev zip
+
+      - uses: actions/checkout@v7
+
+      - name: Build tdjson ohos arm64
+        env:
+          TD_COMMIT: ${{ needs.prepare.outputs.upstream_sha }}
+        run: |
+          scripts/build-ohos-libs.sh
+          ls -lh dist/
+
+      - name: Verify packaged library
+        run: |
+          test -f dist/tdjson-ohos-arm64.zip
+          unzip -l dist/tdjson-ohos-arm64.zip
+          unzip -l dist/tdjson-ohos-arm64.zip | grep -q 'arm64-v8a/libtdjson.so'
+
+      - name: Upload ohos asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: tdjson-ohos-arm64
+          path: dist/tdjson-ohos-arm64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish ohos release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download ohos asset
+        uses: actions/download-artifact@v8
+        with:
+          name: tdjson-ohos-arm64
+          path: release-assets
+
+      - name: Publish ohos release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          TDLIB_VERSION: ${{ needs.prepare.outputs.tdlib_version }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: |
+          ls -lh release-assets
+          (
+            cd release-assets
+            sha256sum tdjson-ohos-arm64.zip > SHA256SUMS
+          )
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --cleanup-tag --yes
+          fi
+          gh release create "$RELEASE_TAG" release-assets/tdjson-ohos-arm64.zip release-assets/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "TDLib $TDLIB_VERSION ohos arm64 ($UPSTREAM_SHA)" \
+            --notes "Automated HarmonyOS (ohos) arm64 build of tdjson from tdlib/td@$UPSTREAM_SHA (TDLib $TDLIB_VERSION) with the Mithka patch set. Installs to ohos/entry/libs/arm64-v8a/libtdjson.so." \
+            --latest=false
