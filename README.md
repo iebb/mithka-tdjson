@@ -50,6 +50,26 @@ commit, patch-set digest, archive digests, and digest of every packaged file.
 
 ## Automated Upstream Sync
 
+When upstream additions conflict with `mithka-installed-cloud-themes.patch`,
+`Free-model TDLib patch repair` can generate a bounded repair using the
+repository's `OPENROUTER_API_KEY` secret. It uses `openrouter/free` with a zero
+price ceiling and never falls back to paid inference. The model can only order
+both complete additive conflict sides in the schema and `ThemeManager.h`;
+deletions, changed nonempty lines, other paths, and semantic conflicts require
+manual review. Session backup and transfer-boost patches are outside its scope.
+
+The proposal job has the model key and read-only repository access. A separate
+key-free job reapplies the complete series twice and generates/checks the schema
+and all eight patched translation units. Only then may a separate publication
+job create or update the single `automation/tdlib-theme-patch` PR. It never
+merges, pushes master, or publishes native releases. Model output is source
+data, never shell commands. Failed/stale validation leaves the PR unchanged.
+
+PRs and manual `Sync TDLib Artifacts` runs with `validate_only: true` execute
+only read-only preflight. Native artifact publication remains restricted to
+canonical master after the existing build gates. The existing HarmonyOS PR is
+independent of patch-drift repairs and must not be reused for unrelated fixes.
+
 .github/workflows/sync-upstream.yml runs daily, after relevant packaging changes,
 and on manual request. It resolves the current `tdlib/td` `master` commit, reads
 the TDLib version from upstream, validates the ordered Mithka patch series, and
