@@ -1,0 +1,192 @@
+name: Free-model TDLib patch repair
+
+on:
+  workflow_run:
+    workflows: [Sync TDLib Artifacts]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      upstream_sha:
+        description: Exact TDLib SHA, or leave empty for upstream master
+        type: string
+        default: ''
+  # Owner-controlled bootstrap/testing only. Forks and other PRs cannot obtain
+  # the model key or publication token through this workflow.
+  pull_request:
+    paths: ['.github/workflows/repair-theme-patch.yml', 'scripts/repair-theme-patch.py']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tdlib-theme-patch-repair
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    if: >-
+      github.repository == 'iebb/mithka-tdjson' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'failure' &&
+        github.event.workflow_run.head_branch == 'master') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.user.id == 2127498 &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.head.ref == 'automation/tdlib-theme-patch'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      packaging_sha: ${{ steps.target.outputs.packaging_sha }}
+      upstream_sha: ${{ steps.target.outputs.upstream_sha }}
+      changed: ${{ steps.result.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'master' }}
+          persist-credentials: false
+      - name: Verify the failed source and exact upstream target
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          FAILURE_RUN: ${{ github.event.workflow_run.id }}
+          REQUESTED_SHA: ${{ inputs.upstream_sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          def gh(path):
+              return subprocess.check_output(['gh', 'api', 'repos/iebb/mithka-tdjson/'+path], text=True)
+          packaging = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          sha = os.environ.get('REQUESTED_SHA','')
+          if os.environ['EVENT_NAME'] == 'workflow_run':
+              run = json.loads(gh('actions/runs/'+os.environ['FAILURE_RUN']))
+              master = json.loads(gh('git/ref/heads/master'))['object']['sha']
+              if run['head_sha'] != packaging or packaging != master or run['path'] != '.github/workflows/sync-upstream.yml':
+                  raise SystemExit('Stale or unrelated failed source; not repairing')
+              jobs = json.loads(gh('actions/runs/'+os.environ['FAILURE_RUN']+'/jobs?per_page=100'))['jobs']
+              failed = [j for j in jobs if j['name']=='Validate Mithka patches' and j['conclusion']=='failure']
+              if not failed or not any(s['name']=='Apply current patch series' and s['conclusion']=='failure' for s in failed[0]['steps']):
+                  raise SystemExit('Failure is not patch application; human review required')
+              prepare = next(j for j in jobs if j['name']=='Resolve upstream TDLib' and j['conclusion']=='success')
+              log = gh('actions/jobs/'+str(prepare['id'])+'/logs')
+              found = set(re.findall(r'Upstream commit: ([0-9a-f]{40})\b',log))
+              if len(found)!=1:
+                  raise SystemExit('Cannot attest one failed upstream identity')
+              sha = found.pop()
+          if not sha:
+              sha = subprocess.check_output(['git','ls-remote','https://github.com/tdlib/td.git','refs/heads/master'], text=True).split()[0]
+          if not re.fullmatch('[0-9a-f]{40}',sha):
+              raise SystemExit('Expected an exact upstream SHA')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f'packaging_sha={packaging}\nupstream_sha={sha}\n')
+          print('Pinned TDLib source:',sha)
+          PY
+      - uses: actions/checkout@v7
+        with:
+          repository: tdlib/td
+          ref: ${{ steps.target.outputs.upstream_sha }}
+          fetch-depth: 0
+          path: upstream-td
+          persist-credentials: false
+      - name: Test the bounded repair agent offline
+        run: python3 -m unittest discover -s tests -v
+      - name: Ask free models to order only additive conflict sides
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 scripts/repair-theme-patch.py --source upstream-td --output repair-output
+      - name: Record whether a patch actually changed
+        id: result
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          r=json.loads(Path('repair-output/repair-report.json').read_text())
+          changed=r['original_patch_sha256']!=r['repaired_patch_sha256']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write('changed='+str(changed).lower()+'\n')
+          print('Patch changed:',changed,'; model calls:',r['attempts'])
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: theme-repair
+          path: repair-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  validate:
+    needs: propose
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.propose.outputs.packaging_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: theme-repair
+          path: repair-output
+      - name: Verify candidate provenance and install only the target patch
+        env:
+          UPSTREAM_SHA: ${{ needs.propose.outputs.upstream_sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          path=Path('patches/mithka-installed-cloud-themes.patch')
+          report=json.loads(Path('repair-output/repair-report.json').read_text())
+          content=Path('repair-output/mithka-installed-cloud-themes.patch').read_bytes()
+          assert report['upstream_sha']==os.environ['UPSTREAM_SHA']
+          assert report['original_patch_sha256']==hashlib.sha256(path.read_bytes()).hexdigest()
+          assert report['repaired_patch_sha256']==hashlib.sha256(content).hexdigest()
+          assert report['zero_cost'] is True and report['policy']=='additive-conflict-sides-only'
+          path.write_bytes(content)
+          PY
+      - uses: actions/checkout@v7
+        with:
+          repository: tdlib/td
+          ref: ${{ needs.propose.outputs.upstream_sha }}
+          fetch-depth: 0
+          path: upstream-td
+          persist-credentials: false
+      - name: Validate the complete patch series, schema and eight translation units
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gperf libssl-dev zlib1g-dev
+          scripts/apply-mithka-patches.sh upstream-td
+          scripts/apply-mithka-patches.sh upstream-td
+          git -C upstream-td diff --check
+          cmake -S upstream-td -B patch-check -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTD_ENABLE_LTO=OFF
+          cmake --build patch-check --target prepare_cross_compiling --parallel 2
+          python3 scripts/check-patched-source.py patch-check
+
+  publish-pr:
+    needs: [propose, validate]
+    if: github.event_name != 'pull_request' && needs.propose.outputs.changed == 'true' && vars.TDLIB_REPAIR_PR_WRITES == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.propose.outputs.packaging_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: theme-repair
+          path: repair-output
+      - name: Update one canonical PR and request read-only preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGING_SHA: ${{ needs.propose.outputs.packaging_sha }}
+          VALIDATION_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/publish-theme-repair.py

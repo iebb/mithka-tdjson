@@ -8,6 +8,8 @@ on:
       - .github/workflows/sync-upstream.yml
       - patches/**
       - scripts/**
+  pull_request:
+    paths: ["patches/**", "scripts/**", "tests/**", ".github/workflows/**"]
   schedule:
     - cron: '23 3 * * *'
   workflow_dispatch:
@@ -16,6 +18,10 @@ on:
         description: TDLib ref to build
         required: false
         default: master
+      validate_only:
+        description: Run patch/schema/source validation without building or publishing artifacts
+        type: boolean
+        default: false
       force:
         description: Publish a new immutable rebuild even if this source release exists
         required: false
@@ -23,7 +29,8 @@ on:
         default: false
 
 concurrency:
-  group: sync-tdlib-artifacts
+  # Read-only PR/manual checks must never cancel a native publication build.
+  group: sync-tdlib-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.validate_only && github.ref || 'master-publication' }}
   cancel-in-progress: true
 
 permissions:
@@ -48,6 +55,8 @@ jobs:
     steps:
       - name: Check out Mithka TDLib packaging
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Resolve upstream commit
         id: resolve
@@ -67,6 +76,7 @@ jobs:
       - name: Check out TDLib metadata
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           repository: tdlib/td
           ref: ${{ steps.resolve.outputs.upstream_sha }}
           path: upstream-td
@@ -78,6 +88,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE_BUILD: ${{ inputs.force || false }}
+          VALIDATE_ONLY: ${{ inputs.validate_only || github.event_name == 'pull_request' }}
           UPSTREAM_SHA: ${{ steps.resolve.outputs.upstream_sha }}
           UPSTREAM_SHORT_SHA: ${{ steps.resolve.outputs.upstream_short_sha }}
         run: |
@@ -105,7 +116,7 @@ jobs:
           base_release_tag="tdlib-$tdlib_version-$UPSTREAM_SHORT_SHA-mithka-$patchset_short_sha-build-$build_definition_short_sha-v$ARTIFACT_SCHEMA_VERSION"
           release_tag="$base_release_tag"
           should_build=true
-          if gh release view "$base_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [ "$VALIDATE_ONLY" != "true" ] && gh release view "$base_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             release_assets="$(gh release view "$base_release_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
             release_complete=true
             for asset in \
@@ -151,10 +162,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Check out resolved TDLib source
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           repository: tdlib/td
           ref: ${{ needs.prepare.outputs.upstream_sha }}
           path: upstream-td
@@ -187,7 +201,7 @@ jobs:
   build-android:
     name: Android ${{ matrix.abi }}
     needs: [prepare, patch-preflight]
-    if: needs.prepare.outputs.should_build == 'true'
+    if: needs.prepare.outputs.should_build == 'true' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && inputs.validate_only != true
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -195,6 +209,8 @@ jobs:
         abi: [arm64-v8a, armeabi-v7a, x86_64]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install build tools
         run: |
@@ -229,10 +245,12 @@ jobs:
   build-ios:
     name: iOS XCFramework
     needs: [prepare, patch-preflight]
-    if: needs.prepare.outputs.should_build == 'true'
+    if: needs.prepare.outputs.should_build == 'true' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && inputs.validate_only != true
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install build tools
         run: brew install cmake ninja
@@ -258,7 +276,7 @@ jobs:
   build-desktop:
     name: ${{ matrix.label }}
     needs: [prepare, patch-preflight]
-    if: needs.prepare.outputs.should_build == 'true'
+    if: needs.prepare.outputs.should_build == 'true' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && inputs.validate_only != true
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -296,6 +314,8 @@ jobs:
             asset: tdjson-windows-arm64.zip
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install Linux build tools
         if: matrix.platform == 'linux'
@@ -401,12 +421,14 @@ jobs:
   publish:
     name: Publish tdjson release
     needs: [prepare, patch-preflight, build-android, build-ios, build-desktop]
-    if: needs.prepare.outputs.should_build == 'true'
+    if: needs.prepare.outputs.should_build == 'true' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && inputs.validate_only != true
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Download tdjson assets
         uses: actions/download-artifact@v8
