@@ -1,10 +1,12 @@
 diff --git a/td/generate/scheme/td_api.tl b/td/generate/scheme/td_api.tl
-index 2779f2d..9e212ce 100644
+index 2f70f0abe56da2a107dc857459640accd8751bc1..ce605c522e31ff1005faea5b0ec531378d7a38e6 100644
 --- a/td/generate/scheme/td_api.tl
 +++ b/td/generate/scheme/td_api.tl
-@@ -4331,6 +4331,16 @@ builtInThemeArctic = BuiltInTheme;
- themeSettings base_theme:BuiltInTheme accent_color:int32 background:background outgoing_message_fill:BackgroundFill animate_outgoing_message_fill:Bool has_outgoing_message_accent_color:Bool outgoing_message_accent_color:int32 = ThemeSettings;
+@@ -4526,10 +4526,19 @@ profileShareThemeUpgradedGift gift:upgradedGift = ProfileShareTheme;
+ inputProfileShareThemeEmoji emojis:vector<EmojiType> use_default_background:Bool background_backdrop_id:int32 = InputProfileShareTheme;
  
+ //@description A theme based on an upgraded gift @received_gift_id Identifier of the upgraded gift, which is owned by the user or the chat, for which the theme is set
+ inputProfileShareThemeUpgradedGift received_gift_id:string = InputProfileShareTheme;
  
 +//@description Contains metadata for a cloud theme saved by the current user
 +//@slug Unique theme name used in https://t.me/addtheme links
@@ -15,11 +17,14 @@ index 2779f2d..9e212ce 100644
 +//@themes Saved cloud themes
 +installedCloudThemes themes:vector<installedCloudTheme> = InstalledCloudThemes;
 +
-+
+ 
  //@description Represents a button inside a rich message
  //@text Text of the button; only richTexts, richTextPlain, and richTextCustomEmoji are allowed
  //@style Style of the button
-@@ -13877,6 +13887,10 @@ deleteChatBackground chat_id:int53 restore_previous:Bool = Ok;
+ //@type Type of the button; must be one of inlineKeyboardButtonTypeUrl, inlineKeyboardButtonTypeLoginUrl, inlineKeyboardButtonTypeWebApp, inlineKeyboardButtonTypeCallback,
+@@ -14476,10 +14485,14 @@ deleteChatBackground chat_id:int53 restore_previous:Bool = Ok;
+ //@description Returns available to the current user gift chat themes
+ //@offset Offset of the first entry to return as received from the previous request; use empty string to get the first chunk of results
  //@limit The maximum number of chat themes to return
  getGiftChatThemes offset:string limit:int32 = GiftChatThemes;
  
@@ -30,11 +35,15 @@ index 2779f2d..9e212ce 100644
  //@description Changes the chat theme. Supported only in private and secret chats @chat_id Chat identifier @theme New chat theme; pass null to return the default theme
  setChatTheme chat_id:int53 theme:InputChatTheme = Ok;
  
+ //@description Changes the draft message in a chat or a topic
+ //@chat_id Chat identifier
 diff --git a/td/telegram/Requests.cpp b/td/telegram/Requests.cpp
-index d69474e..1dcc01b 100644
+index a274410ab3bc757967a21c05367ab05988a52329..a55ef27e04b0331eb0f805ab764b5a17757611ca 100644
 --- a/td/telegram/Requests.cpp
 +++ b/td/telegram/Requests.cpp
-@@ -5868,6 +5868,13 @@ void Requests::on_request(uint64 id, td_api::getGiftChatThemes &request) {
+@@ -5876,10 +5876,17 @@ void Requests::on_request(uint64 id, td_api::getGiftChatThemes &request) {
+   CLEAN_INPUT_STRING(request.offset_);
+   CREATE_REQUEST_PROMISE();
    td_->theme_manager_->get_unique_gift_chat_themes(request.offset_, request.limit_, std::move(promise));
  }
  
@@ -48,11 +57,15 @@ index d69474e..1dcc01b 100644
  void Requests::on_request(uint64 id, td_api::setChatTheme &request) {
    CHECK_IS_USER();
    CREATE_OK_REQUEST_PROMISE();
+   td_->messages_manager_->set_dialog_theme(DialogId(request.chat_id_), std::move(request.theme_), std::move(promise));
+ }
 diff --git a/td/telegram/Requests.h b/td/telegram/Requests.h
-index 4f3420d..7df4685 100644
+index 6a5a5b07f1e4c2cb1d11fcd0bd8f8fa496727b99..e6574bcbf03b60d50a8c7df2029e5295cbd911e3 100644
 --- a/td/telegram/Requests.h
 +++ b/td/telegram/Requests.h
-@@ -1096,6 +1096,8 @@ class Requests {
+@@ -1096,10 +1096,12 @@ class Requests {
+ 
+   void on_request(uint64 id, const td_api::deleteChatBackground &request);
  
    void on_request(uint64 id, td_api::getGiftChatThemes &request);
  
@@ -61,11 +74,15 @@ index 4f3420d..7df4685 100644
    void on_request(uint64 id, td_api::setChatTheme &request);
  
    void on_request(uint64 id, td_api::setChatDraftMessage &request);
+ 
+   void on_request(uint64 id, const td_api::toggleChatHasProtectedContent &request);
 diff --git a/td/telegram/ThemeManager.cpp b/td/telegram/ThemeManager.cpp
-index cdbcb21..3a95fb1 100644
+index 630a581d7acf36f35270549b89e3326744506c41..af81a6982c43142d09d88d8555f08cfa3fb393d6 100644
 --- a/td/telegram/ThemeManager.cpp
 +++ b/td/telegram/ThemeManager.cpp
-@@ -67,6 +67,43 @@ class GetChatThemesQuery final : public Td::ResultHandler {
+@@ -71,10 +71,47 @@ class GetChatThemesQuery final : public Td::ResultHandler {
+   void on_error(Status status) final {
+     promise_.set_error(std::move(status));
    }
  };
  
@@ -109,7 +126,11 @@ index cdbcb21..3a95fb1 100644
  class GetPeerColorsQuery final : public Td::ResultHandler {
    Promise<telegram_api::object_ptr<telegram_api::help_PeerColors>> promise_;
  
-@@ -864,6 +901,11 @@ void ThemeManager::on_get_chat_themes(Result<telegram_api::object_ptr<telegram_a
+  public:
+   explicit GetPeerColorsQuery(Promise<telegram_api::object_ptr<telegram_api::help_PeerColors>> &&promise)
+@@ -1074,10 +1111,15 @@ void ThemeManager::on_get_chat_themes(Result<telegram_api::object_ptr<telegram_a
+ 
+   save_chat_themes();
    send_update_chat_themes();
  }
  
@@ -121,13 +142,17 @@ index cdbcb21..3a95fb1 100644
  void ThemeManager::reload_accent_colors() {
    auto request_promise = PromiseCreator::lambda(
        [actor_id = actor_id(this)](Result<telegram_api::object_ptr<telegram_api::help_PeerColors>> result) {
+         send_closure(actor_id, &ThemeManager::on_get_accent_colors, std::move(result));
+       });
 diff --git a/td/telegram/ThemeManager.h b/td/telegram/ThemeManager.h
-index 4b5a2c7..79c10af 100644
+index 725c01bafb0adfaf98e3586539e15b65323b3cac..c672129c933d9b27833144c667c6143f43b3bb1c 100644
 --- a/td/telegram/ThemeManager.h
 +++ b/td/telegram/ThemeManager.h
-@@ -54,6 +54,9 @@ class ThemeManager final : public Actor {
-   void get_unique_gift_chat_themes(const string &offset, int32 limit,
-                                    Promise<td_api::object_ptr<td_api::giftChatThemes>> &&promise);
+@@ -60,10 +60,13 @@ class ThemeManager final : public Actor {
+   void get_profile_share_theme_backdrops(Promise<td_api::object_ptr<td_api::profileShareThemeBackdrops>> &&promise);
+ 
+   void set_profile_share_theme(DialogId dialog_id, td_api::object_ptr<td_api::InputProfileShareTheme> &&theme,
+                                Promise<Unit> &&promise);
  
 +  void get_installed_cloud_themes(const string &theme_format,
 +                                  Promise<td_api::object_ptr<td_api::installedCloudThemes>> &&promise);
@@ -135,3 +160,5 @@ index 4b5a2c7..79c10af 100644
    void get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const;
  
   private:
+   struct EmojiChatTheme {
+     string emoji;

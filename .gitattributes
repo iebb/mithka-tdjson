@@ -1,4 +1,5 @@
 *.sh text eol=lf
-*.patch text eol=lf
+# Empty unified-diff context lines contain a meaningful leading space.
+*.patch text eol=lf whitespace=-blank-at-eol
 patches/series text eol=lf
 .github/workflows/*.yml text eol=lf
