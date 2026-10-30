@@ -178,6 +178,96 @@ def review_clear(number):
         )
 
 
+def checks_clear(pr, head):
+    # Job-token PR events can wait for human workflow approval. The publisher
+    # explicitly dispatches the exact same trusted preflight; only its redundant
+    # PR run may remain pending, never an unrelated check or a real failure.
+    runs = api(f"actions/runs?head_sha={head}&event=pull_request&per_page=100")
+    require(runs["total_count"] < 100, "Too many PR workflow runs to attest")
+    redundant = set()
+    for run in runs["workflow_runs"]:
+        if run["status"] == "completed" and run["conclusion"] in (
+            "success",
+            "neutral",
+            "skipped",
+        ):
+            continue
+        numbers = [p["number"] for p in run["pull_requests"]]
+        if not numbers:
+            # GitHub sometimes omits the workflow run's pull_requests array.
+            # Resolve the actual commit association rather than guessing.
+            associated = api(f"commits/{head}/pulls?per_page=100")
+            require(len(associated) < 100, "Too many associated PRs to attest")
+            numbers = [
+                p["number"]
+                for p in associated
+                if p["state"] == "open"
+                and p["head"]["sha"] == head
+                and p["head"]["ref"] == BRANCH
+                and p["base"]["ref"] == "master"
+            ]
+        allowed = (
+            run["head_sha"] == head
+            and run["head_branch"] == BRANCH
+            and run["head_repository"]["full_name"] == REPO
+            and run["path"] == ".github/workflows/sync-upstream.yml"
+            and run["event"] == "pull_request"
+            and numbers == [pr["number"]]
+            and (
+                (
+                    run["status"] in ("waiting", "requested", "pending", "queued")
+                    and run["conclusion"] is None
+                )
+                or (
+                    run["status"] == "completed"
+                    and run["conclusion"] == "action_required"
+                )
+            )
+        )
+        require(allowed, "Failing, unknown, or unrelated pending PR workflow")
+        jobs = api(f"actions/runs/{run['id']}/jobs?per_page=100")
+        require(
+            jobs["total_count"] == 0 and jobs["jobs"] == [],
+            "Pending PR workflow already has jobs",
+        )
+        redundant.add(run["check_suite_id"])
+    require(
+        pr["mergeable_state"] == "clean" or redundant,
+        "Nonpassing aggregate status is not an attested redundant PR run",
+    )
+    preview = pr.get("merge_commit_sha") or ""
+    require(re.fullmatch(SHA, preview), "Cannot attest the synthetic merge checks")
+    for sha in dict.fromkeys((head, preview)):
+        checks = api(f"commits/{sha}/check-runs?per_page=100")
+        require(checks["total_count"] < 100, "Too many commit checks to attest")
+        for check in checks["check_runs"]:
+            passed = check["status"] == "completed" and check["conclusion"] in (
+                "success",
+                "neutral",
+                "skipped",
+            )
+            duplicate = (
+                (
+                    check["status"] != "completed"
+                    and check["conclusion"] is None
+                    or check["status"] == "completed"
+                    and check["conclusion"] == "action_required"
+                )
+                and check["app"]["slug"] == "github-actions"
+                and check["check_suite"]["id"] in redundant
+            )
+            require(
+                passed or duplicate,
+                "Failing, unknown, or unrelated pending commit check",
+            )
+        statuses = api(f"commits/{sha}/status?per_page=100")
+        require(
+            statuses["total_count"] < 100
+            and all(s["state"] == "success" for s in statuses["statuses"]),
+            "Failing or pending commit status",
+        )
+
+
 def merge_repair(run_id, check_only=False):
     require(str(run_id).isdigit(), "Invalid validation run ID")
     run = api(f"actions/runs/{run_id}")
@@ -204,7 +294,7 @@ def merge_repair(run_id, check_only=False):
         and pr["base"]["sha"] == base
         and run["head_sha"] == head
         and pr["mergeable"] is True
-        and pr["mergeable_state"] == "clean",
+        and pr["mergeable_state"] in ("clean", "unstable"),
         "PR is stale, manually changed, blocked, or outside the agent scope",
     )
     comparison = api(f"compare/{base}...{head}")
@@ -266,6 +356,7 @@ def merge_repair(run_id, check_only=False):
         "Proposed patch differs from the bounded, validated generation artifact",
     )
     review_clear(pr["number"])
+    checks_clear(pr, head)
     require(
         api("git/ref/heads/master")["object"]["sha"] == base,
         "Master advanced; regenerate and revalidate",

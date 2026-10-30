@@ -57,6 +57,7 @@ class MergeTests(unittest.TestCase):
             "base": {"sha": BASE, "ref": "master"},
             "mergeable": True,
             "mergeable_state": "clean",
+            "merge_commit_sha": "f" * 40,
         }
         self.runs = {
             "1": self.make_run(BASE, "master", "repair-theme-patch.yml"),
@@ -88,6 +89,7 @@ class MergeTests(unittest.TestCase):
         }
         self.candidate = REPAIRED
         self.comments, self.reviews, self.threads = [], [], []
+        self.duplicates, self.check_runs, self.statuses = [], [], []
         self.reads = 0
 
     @staticmethod
@@ -123,8 +125,24 @@ class MergeTests(unittest.TestCase):
         if path.startswith("actions/runs/"):
             run_id = path.split("/")[2]
             return (
-                {"jobs": self.jobs[run_id]} if "/jobs?" in path else self.runs[run_id]
+                {"jobs": self.jobs[run_id], "total_count": len(self.jobs[run_id])}
+                if "/jobs?" in path
+                else self.runs[run_id]
             )
+        if path.startswith("actions/runs?"):
+            return {
+                "total_count": len(self.duplicates),
+                "workflow_runs": self.duplicates,
+            }
+        if path.startswith("commits/"):
+            if "/pulls?" in path:
+                return [self.pr]
+            if "/check-runs?" in path:
+                return {
+                    "total_count": len(self.check_runs),
+                    "check_runs": self.check_runs,
+                }
+            return {"total_count": len(self.statuses), "statuses": self.statuses}
         if path.startswith("actions/jobs/"):
             return f"Upstream commit: {UPSTREAM}\n"
         if path.startswith("contents/"):
@@ -194,6 +212,86 @@ class MergeTests(unittest.TestCase):
     def test_check_only_never_writes(self):
         self.execute(check_only=True)
         self.assert_no_writes()
+
+    def pending_duplicate(self):
+        self.duplicates = [
+            {
+                **self.make_run(HEAD, merge.BRANCH, "sync-upstream.yml"),
+                "id": 3,
+                "event": "pull_request",
+                "status": "waiting",
+                "conclusion": None,
+                "pull_requests": [{"number": 6}],
+                "check_suite_id": 123,
+            }
+        ]
+        self.jobs["3"] = []
+        self.check_runs = [
+            {
+                "status": "queued",
+                "conclusion": None,
+                "app": {"slug": "github-actions"},
+                "check_suite": {"id": 123},
+            }
+        ]
+        self.pr["mergeable_state"] = "unstable"
+
+    def test_only_matching_zero_job_duplicate_can_remain_pending(self):
+        self.pending_duplicate()
+        self.assertEqual(self.execute(), MERGED)
+
+    def test_omitted_run_pr_array_requires_positive_commit_association(self):
+        self.pending_duplicate()
+        self.duplicates[0]["pull_requests"] = []
+        self.assertEqual(self.execute(), MERGED)
+
+    def test_failed_sync_pr_workflow_blocks_even_without_check_runs(self):
+        self.pending_duplicate()
+        self.duplicates[0].update(status="completed", conclusion="failure")
+        self.check_runs = []
+        with self.assertRaises(ValueError):
+            self.execute()
+        self.assert_no_writes()
+
+    def test_other_pending_or_failed_checks_are_not_exempted(self):
+        self.pending_duplicate()
+        for status, conclusion in [("queued", None), ("completed", "failure")]:
+            self.check_runs.append(
+                {
+                    "status": status,
+                    "conclusion": conclusion,
+                    "app": {"slug": "github-actions"},
+                    "check_suite": {"id": 456},
+                }
+            )
+            with self.subTest(conclusion=conclusion), self.assertRaises(ValueError):
+                self.execute()
+            self.assert_no_writes()
+            self.check_runs.pop()
+
+    def test_duplicate_wrong_sha_pr_suite_or_started_jobs_blocks(self):
+        for field, value in [
+            ("head_sha", BASE),
+            ("pull_requests", [{"number": 7}]),
+            ("check_suite_id", 999),
+        ]:
+            self.pending_duplicate()
+            self.duplicates[0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.execute()
+            self.assert_no_writes()
+        self.pending_duplicate()
+        self.jobs["3"] = [{"name": "started"}]
+        with self.assertRaises(ValueError):
+            self.execute()
+        self.assert_no_writes()
+
+    def test_pending_or_failed_legacy_status_blocks(self):
+        for state in ["pending", "failure", "error"]:
+            self.statuses = [{"state": state}]
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                self.execute()
+            self.assert_no_writes()
 
     def test_disabled_auto_merge_never_writes(self):
         with self.assertRaisesRegex(ValueError, "not enabled"):

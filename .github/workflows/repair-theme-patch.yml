@@ -214,6 +214,8 @@ jobs:
       contents: write
       pull-requests: read
       actions: write
+      checks: read
+      statuses: read
     steps:
       # workflow_run checks out trusted default-branch code, never the PR head.
       - uses: actions/checkout@v7

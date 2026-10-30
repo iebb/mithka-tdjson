@@ -152,8 +152,8 @@ def main():
                 "body": body,
             },
         )
-    # GITHUB_TOKEN pushes cannot trigger ordinary PR checks. Dispatch only the
-    # fixed read-only lane with publication disabled by both input and ref.
+    # Job-token PR events can require workflow approval. Explicitly dispatch
+    # the fixed read-only lane with publication disabled by both input and ref.
     api(
         "actions/workflows/sync-upstream.yml/dispatches",
         "POST",

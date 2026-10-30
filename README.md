@@ -81,6 +81,9 @@ validation, and changed master stop automatic merging. It never approves PRs
 or merges unrelated submissions. Publication uses the exact checked tree and
 a non-force master update, then explicitly starts the normal native-build
 pipeline; native artifacts still require every existing platform build gate.
+The explicitly dispatched preflight also avoids human approval of duplicate
+bot-created PR runs. Only the matching zero-job, pending Sync PR check suite
+is exempted; other pending checks and all actual failures still block merging.
 
 To audit a successful canonical-branch preflight without any writes or model
 calls, manually run the repair workflow with `audit_merge_run=<run-id>`.
