@@ -8,12 +8,12 @@ from pathlib import Path
 import re
 import subprocess
 
+from theme_repair_body import END, START, render_body
+
 REPO = "iebb/mithka-tdjson"
 BRANCH = "automation/tdlib-theme-patch"
 PATCH = "patches/mithka-installed-cloud-themes.patch"
 SHA = re.compile(r"[0-9a-f]{40}")
-START = "<!-- mithka-theme-repair:begin -->"
-END = "<!-- mithka-theme-repair:end -->"
 
 
 def api(path, method="GET", body=None):
@@ -126,18 +126,12 @@ def main():
         api(f"git/refs/heads/{BRANCH}", "PATCH", {"sha": commit["sha"], "force": False})
     else:
         api("git/refs", "POST", {"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
-    body = (
-        START + "\n"
-        "## Change\n\nRefresh only the installed-cloud-theme patch after an additive upstream conflict. "
-        "Both upstream profile-share declarations and Mithka cloud-theme additions are retained.\n\n"
-        f"Upstream: `{upstream}`\n\nPackaging base: `{base}`\n\n"
-        f"Validated patch SHA-256: `{report['repaired_patch_sha256']}`\n\n"
-        f"Agent proposal commit: `{commit['sha']}`\n\n"
-        f"[Read-only generation and schema/source validation]({os.environ['VALIDATION_URL']}). "
-        "The free-model proposal is not merge approval. Native artifact builds/publication have not run in this lane.\n\n"
-        "This is the single canonical PR for this repair; subsequent attempts update it. "
-        "Session backup, transfer boost, release permissions and the HarmonyOS feature are unchanged.\n"
-        + END
+    body = render_body(
+        base,
+        upstream,
+        report["repaired_patch_sha256"],
+        commit["sha"],
+        os.environ["VALIDATION_URL"],
     )
     if prs:
         previous_body = prs[0].get("body", "")

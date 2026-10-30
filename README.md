@@ -61,9 +61,9 @@ manual review. Session backup and transfer-boost patches are outside its scope.
 The proposal job has the model key and read-only repository access. A separate
 key-free job reapplies the complete series twice and generates/checks the schema
 and all eight patched translation units. Only then may a separate publication
-job create or update the single `automation/tdlib-theme-patch` PR. It never
-merges, pushes master, or publishes native releases. Model output is source
-data, never shell commands. Failed/stale validation leaves the PR unchanged.
+job create or update the single `automation/tdlib-theme-patch` PR. Model output
+is source data, never shell commands. Failed/stale validation leaves the PR
+unchanged.
 
 Automatic PR writes are opt-in via repository variable
 `TDLIB_REPAIR_PR_WRITES=true` and GitHub's repository setting allowing Actions
@@ -71,6 +71,19 @@ to create PRs. That GitHub setting also permits approving reviews, so enabling
 it requires an explicit maintainer decision; this workflow never approves.
 Without opt-in, generation and validation still retain the proposed patch and
 provenance as a CI artifact.
+
+With `TDLIB_REPAIR_AUTO_MERGE=true`, a separate trusted-master job automatically
+merges that bot-authored, patch-only PR after its exact head passes read-only
+preflight. It verifies the original generation artifact, zero-cost/additive
+policy, patch hashes, pinned upstream, current master, and review state. Manual
+commits, manual notes or feedback, unresolved threads, unrelated files, stale
+validation, and changed master stop automatic merging. It never approves PRs
+or merges unrelated submissions. Publication uses the exact checked tree and
+a non-force master update, then explicitly starts the normal native-build
+pipeline; native artifacts still require every existing platform build gate.
+
+To audit a successful canonical-branch preflight without any writes or model
+calls, manually run the repair workflow with `audit_merge_run=<run-id>`.
 
 PRs and manual `Sync TDLib Artifacts` runs with `validate_only: true` execute
 only read-only preflight. Native artifact publication remains restricted to

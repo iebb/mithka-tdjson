@@ -10,6 +10,10 @@ on:
         description: Exact TDLib SHA, or leave empty for upstream master
         type: string
         default: ''
+      audit_merge_run:
+        description: Optional successful preflight run ID to audit without merging or calling models
+        type: string
+        default: ''
   # Owner-controlled bootstrap/testing only. Forks and other PRs cannot obtain
   # the model key or publication token through this workflow.
   pull_request:
@@ -29,7 +33,7 @@ jobs:
       ((github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'failure' &&
         github.event.workflow_run.head_branch == 'master') ||
-       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.audit_merge_run == '') ||
        (github.event_name == 'pull_request' &&
         github.event.pull_request.user.id == 2127498 &&
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -59,7 +63,10 @@ jobs:
           python3 - <<'PY'
           import json, os, re, subprocess
           def gh(path):
-              return subprocess.check_output(['gh', 'api', 'repos/iebb/mithka-tdjson/'+path], text=True)
+              command = ['gh', 'api', 'repos/iebb/mithka-tdjson/'+path]
+              if path.endswith('/logs'):
+                  command += ['--allow-escape-sequences']
+              return subprocess.check_output(command, text=True)
           packaging = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
           sha = os.environ.get('REQUESTED_SHA','')
           if os.environ['EVENT_NAME'] == 'workflow_run':
@@ -190,3 +197,38 @@ jobs:
           PACKAGING_SHA: ${{ needs.propose.outputs.packaging_sha }}
           VALIDATION_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 scripts/publish-theme-repair.py
+
+  merge-validated-repair:
+    if: >-
+      github.repository == 'iebb/mithka-tdjson' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_branch == 'automation/tdlib-theme-patch' &&
+        vars.TDLIB_REPAIR_AUTO_MERGE == 'true') ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/master' && inputs.audit_merge_run != ''))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: write
+    steps:
+      # workflow_run checks out trusted default-branch code, never the PR head.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Test exact-head merge and rejection gates
+        run: python3 -m unittest discover -s tests -v
+      - name: Merge only the attested patch after successful read-only preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TDLIB_REPAIR_AUTO_MERGE: ${{ vars.TDLIB_REPAIR_AUTO_MERGE }}
+          VALIDATION_RUN: ${{ github.event.workflow_run.id || inputs.audit_merge_run }}
+          CHECK_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          args=(--run-id "$VALIDATION_RUN")
+          if [ "$CHECK_ONLY" = true ]; then args+=(--check-only); fi
+          python3 scripts/merge-theme-repair.py "${args[@]}"
