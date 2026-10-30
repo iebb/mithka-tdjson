@@ -1,6 +1,7 @@
 """Offline boundaries for the fixed-scope free-model conflict proposer."""
 
 import importlib.util
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -41,7 +42,7 @@ class AdditiveRepairTests(unittest.TestCase):
         self.conflicts = repair.conflicts_in(PATH, SOURCE)
         self.value = "  void profile_share();\n\n  void installed_cloud();\n"
 
-    def content(self, value=None):
+    def replacement_content(self, value=None):
         return json.dumps(
             {
                 "resolutions": [
@@ -49,6 +50,9 @@ class AdditiveRepairTests(unittest.TestCase):
                 ]
             }
         )
+
+    def content(self, order="left_then_right"):
+        return json.dumps({"resolutions": [{"id": "c1", "order": order}]})
 
     def test_free_http_request_and_exact_additive_replacement_preserve_outside_bytes(
         self,
@@ -71,6 +75,7 @@ class AdditiveRepairTests(unittest.TestCase):
         self.assertEqual(payload["provider"]["data_collection"], "deny")
         self.assertTrue(payload["provider"]["require_parameters"])
         self.assertEqual(timeout, 60)
+        self.assertEqual(payload["max_tokens"], 1024)
         self.assertNotIn("fake-test-secret", request.data.decode())
         output = repair.replace_hunks(SOURCE, self.conflicts, result)
         self.assertEqual(
@@ -96,9 +101,13 @@ class AdditiveRepairTests(unittest.TestCase):
         ]
         for value in invalid:
             with self.subTest(value=repr(value)), self.assertRaises(repair.RepairError):
-                repair.validate_replacements(self.content(value), self.conflicts)
+                repair.validate_replacements(
+                    self.replacement_content(value), self.conflicts
+                )
         reversed_result = repair.validate_replacements(
-            self.content("  void installed_cloud();\n  void profile_share();\n"),
+            self.replacement_content(
+                "  void installed_cloud();\n  void profile_share();\n"
+            ),
             self.conflicts,
         )
         self.assertIn("c1", reversed_result)
@@ -110,18 +119,33 @@ class AdditiveRepairTests(unittest.TestCase):
             '{"resolutions": []}',
             self.content().replace('"c1"', '"other"'),
             '{"resolutions": [], "resolutions": []}',
+            self.content("drop_right"),
+            self.content(None),
+            self.content(1),
+            self.replacement_content(),
             json.dumps(
                 {
                     "resolutions": [
-                        {"id": "c1", "replacement": self.value, "path": "other.cpp"}
+                        {
+                            "id": "c1",
+                            "order": "left_then_right",
+                            "replacement": self.value,
+                        }
                     ]
                 }
             ),
-            json.dumps({"resolutions": [{"id": "c1", "replacement": self.value}] * 2}),
+            json.dumps({"resolutions": [{"id": "c1", "order": "left_then_right"}] * 2}),
         ]
         for content in invalid:
             with self.subTest(content=content), self.assertRaises(repair.RepairError):
-                repair.validate_replacements(content, self.conflicts)
+                repair.validate_orders(content, self.conflicts)
+        reversed_result = repair.validate_orders(
+            self.content("right_then_left"), self.conflicts
+        )
+        self.assertEqual(
+            reversed_result["c1"],
+            self.conflicts[0].right + b"\n" + self.conflicts[0].left,
+        )
 
     def test_conflict_paths_symlinks_nested_and_truncated_markers_fail_closed(self):
         for path, data in [
@@ -174,7 +198,11 @@ class AdditiveRepairTests(unittest.TestCase):
                 count.append(request)
                 return response(self.content(), **envelope)
 
-            with self.subTest(envelope=envelope), self.assertRaises(repair.RepairError):
+            with (
+                self.subTest(envelope=envelope),
+                self.assertRaises(repair.RepairError),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 repair.ask_free_model(
                     self.conflicts, "fake", opener=opener, sleeper=lambda _: None
                 )
@@ -194,12 +222,36 @@ class AdditiveRepairTests(unittest.TestCase):
             calls.append(request)
             raise repair.URLError("provider detail containing fake-secret")
 
-        with self.assertRaises(repair.RepairError) as caught:
+        diagnostics = io.StringIO()
+        with (
+            self.assertRaises(repair.RepairError) as caught,
+            contextlib.redirect_stderr(diagnostics),
+        ):
             repair.ask_free_model(
                 self.conflicts, "fake-secret", opener=opener, sleeper=lambda _: None
             )
         self.assertEqual(len(calls), repair.ATTEMPTS)
         self.assertNotIn("fake-secret", str(caught.exception))
+        self.assertNotIn("fake-secret", diagnostics.getvalue())
+        self.assertNotIn("provider detail", diagnostics.getvalue())
+        self.assertEqual(diagnostics.getvalue().count("URLError"), repair.ATTEMPTS)
+        self.assertEqual(
+            repair.safe_diagnostic(repair.RepairError("fake-secret")),
+            "Deterministic repair boundary rejected the proposal",
+        )
+        self.assertEqual(
+            repair.safe_diagnostic(
+                repair.RepairError("Provider returned an incomplete response")
+            ),
+            "Provider returned an incomplete response",
+        )
+        error = repair.HTTPError(
+            "https://example.invalid/private", 429, "fake-secret", {}, None
+        )
+        try:
+            self.assertEqual(repair.safe_diagnostic(error), "HTTP status 429")
+        finally:
+            error.close()
 
     def test_complete_series_repair_replays_and_keeps_original_checkout_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -310,9 +362,7 @@ class AdditiveRepairTests(unittest.TestCase):
                         "resolutions": [
                             {
                                 "id": item.id,
-                                "replacement": (
-                                    item.left + b"\n" + item.right
-                                ).decode(),
+                                "order": "left_then_right",
                             }
                             for item in conflicts
                         ]

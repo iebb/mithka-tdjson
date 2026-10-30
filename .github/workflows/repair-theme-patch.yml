@@ -169,7 +169,7 @@ jobs:
 
   publish-pr:
     needs: [propose, validate]
-    if: github.event_name != 'pull_request' && needs.propose.outputs.changed == 'true'
+    if: github.event_name != 'pull_request' && needs.propose.outputs.changed == 'true' && vars.TDLIB_REPAIR_PR_WRITES == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

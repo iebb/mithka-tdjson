@@ -50,13 +50,117 @@ are available. Preserve BOTH complete conflict sides. You may place left before
 right or right before left and adjust empty separator lines only; do not change,
 remove, comment out, invent, or interleave any nonempty source line. Preserve
 upstream ProfileShareTheme definitions/methods and Mithka installed-cloud themes.
-Return one JSON object exactly: {"resolutions":[{"id":"c1","replacement":"..."}]}.
-Return exactly the supplied IDs, once each. Include no markdown or other fields.
+Choose an order only; the caller concatenates exact original bytes. Do not copy
+or rewrite source text. Return one JSON object exactly:
+{"resolutions":[{"id":"c1","order":"left_then_right"}]}.
+Allowed orders: left_then_right or right_then_left. Return exactly the supplied
+IDs once each, with no markdown, explanation, replacement text or other fields.
 """
 
 
 class RepairError(Exception):
     """An error safe to report without provider or source contents."""
+
+
+# Only fixed local labels may appear in logs; never use provider/error bodies.
+PUBLIC_ERRORS = frozenset(
+    (
+        "A fixed Git operation failed; manual review is required",
+        "A non-allowlisted patch or source file needs repair",
+        "Binary source is forbidden",
+        "Cannot create the dedicated validation checkout",
+        "Cloud-theme repair changed unexpected files",
+        "Conflict context exceeds fixed free-model limits",
+        "Duplicate JSON key",
+        "Free-model repair was unavailable or rejected; manual review is required",
+        "Free-model request refused; manual repair is required",
+        "Invalid conflict span",
+        "Invalid model JSON",
+        "Invalid replacement encoding",
+        "Invalid upstream commit",
+        "Missing or extra conflict orders",
+        "Missing or extra replacements",
+        "Mithka cloud-theme method was lost or duplicated",
+        "Mithka cloud-theme schema declaration was lost or duplicated",
+        "Model content is absent or too large",
+        "Model order content is absent or too large",
+        "Model tool calls are forbidden",
+        "Nested or unsupported conflict markers",
+        "Only two-sided additive conflicts are supported",
+        "OpenRouter secret is unavailable",
+        "Output must be an empty, non-symlink directory",
+        "Patch file is absent or symlinked",
+        "Patch series changed; the repair allowlist needs manual review",
+        "Provider did not attest zero cost",
+        "Provider did not identify its model",
+        "Provider response exceeds fixed limits",
+        "Provider returned a non-free model",
+        "Provider returned an incomplete response",
+        "Repaired series failed production replay/idempotence",
+        "Replacement changes, removes, or interleaves source",
+        "Replacement contains markers, NUL, or a truncated line",
+        "Replacement exceeds the additive size bound",
+        "Second production apply changed the source or real index",
+        "Source is absent, non-regular, or too large",
+        "Source is not valid UTF-8",
+        "Source path is outside the fixed allowlist",
+        "Symlinked source checkouts are forbidden",
+        "Symlinked source paths are forbidden",
+        "TDLib source must be a dedicated clean checkout",
+        "The cloud-theme patch was not validated",
+        "Truncated conflict",
+        "Unapproved conflict path or binary content",
+        "Unexpected conflict order fields",
+        "Unexpected model order response fields",
+        "Unexpected model response fields",
+        "Unexpected replacement fields",
+        "Unknown or repeated conflict order ID",
+        "Unknown, repeated, or invalid replacement",
+        "Unmatched conflict marker",
+        "Unmerged source has no supported conflict hunks",
+        "Unresolved markers or binary output",
+        "Unsupported conflict order",
+        "Upstream ProfileShareTheme schema was not preserved",
+        "Upstream profile-share methods were not preserved",
+    )
+)
+
+
+def safe_diagnostic(error):
+    if isinstance(error, HTTPError):
+        return (
+            "HTTP status " + str(error.code)
+            if type(error.code) is int
+            else "HTTP failure"
+        )
+    if isinstance(error, RepairError):
+        text = error.args[0] if error.args else None
+        return (
+            text
+            if isinstance(text, str) and text in PUBLIC_ERRORS
+            else "Deterministic repair boundary rejected the proposal"
+        )
+    for kind in (
+        URLError,
+        TimeoutError,
+        UnicodeError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        ValueError,
+        OSError,
+        subprocess.SubprocessError,
+    ):
+        if isinstance(error, kind):
+            return kind.__name__
+    return "Unclassified request failure"
+
+
+def attempt_diagnostic(attempt, error):
+    print(
+        f"Free-model attempt {attempt}/{ATTEMPTS}: {safe_diagnostic(error)}",
+        file=sys.stderr,
+    )
 
 
 def git(source, *arguments, check=True):
@@ -233,6 +337,42 @@ def validate_replacements(text, conflicts):
     return replacements
 
 
+def validate_orders(text, conflicts):
+    if not isinstance(text, str) or len(text.encode("utf-8")) > 8192:
+        raise RepairError("Model order content is absent or too large")
+    response = decode_json(text)
+    if not isinstance(response, dict) or set(response) != {"resolutions"}:
+        raise RepairError("Unexpected model order response fields")
+    entries = response["resolutions"]
+    if not isinstance(entries, list) or len(entries) != len(conflicts):
+        raise RepairError("Missing or extra conflict orders")
+    expected = {conflict.id: conflict for conflict in conflicts}
+    replacements = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"id", "order"}:
+            raise RepairError("Unexpected conflict order fields")
+        key, order = entry["id"], entry["order"]
+        if not isinstance(key, str) or key not in expected or key in seen:
+            raise RepairError("Unknown or repeated conflict order ID")
+        if not isinstance(order, str) or order not in (
+            "left_then_right",
+            "right_then_left",
+        ):
+            raise RepairError("Unsupported conflict order")
+        seen.add(key)
+        conflict = expected[key]
+        first, second = (
+            (conflict.left, conflict.right)
+            if order == "left_then_right"
+            else (conflict.right, conflict.left)
+        )
+        replacements.append(
+            {"id": key, "replacement": (first + b"\n" + second).decode("utf-8")}
+        )
+    return validate_replacements(json.dumps({"resolutions": replacements}), conflicts)
+
+
 def replace_hunks(data, conflicts, replacements):
     output = []
     previous = 0
@@ -263,7 +403,7 @@ def request_payload(conflicts):
     payload = {
         "model": "openrouter/free",
         "temperature": 0,
-        "max_tokens": 8192,
+        "max_tokens": 1024,
         "response_format": {"type": "json_object"},
         "usage": {"include": True},
         "provider": {
@@ -323,14 +463,17 @@ def ask_free_model(conflicts, key, opener=urlopen, sleeper=time.sleep):
             message = choices[0].get("message", {})
             if message.get("tool_calls") or message.get("function_call"):
                 raise RepairError("Model tool calls are forbidden")
-            replacements = validate_replacements(message.get("content"), conflicts)
+            replacements = validate_orders(message.get("content"), conflicts)
             return replacements, {
                 "model_ids": [model],
                 "zero_cost": True,
                 "attempts": attempt,
             }
         except HTTPError as error:
-            if error.code not in (429, 500, 502, 503, 504):
+            attempt_diagnostic(attempt, error)
+            status = error.code
+            error.close()
+            if status not in (429, 500, 502, 503, 504):
                 raise RepairError(
                     "Free-model request refused; manual repair is required"
                 ) from None
@@ -343,8 +486,8 @@ def ask_free_model(conflicts, key, opener=urlopen, sleeper=time.sleep):
             TypeError,
             AttributeError,
             ValueError,
-        ):
-            pass
+        ) as error:
+            attempt_diagnostic(attempt, error)
         if attempt < ATTEMPTS:
             sleeper(attempt * 2)
     raise RepairError(
@@ -590,11 +733,8 @@ def main():
     args = parser.parse_args()
     try:
         repair(args.source, args.output, os.environ.get("OPENROUTER_API_KEY", ""))
-    except (RepairError, OSError, subprocess.SubprocessError, UnicodeError):
-        print(
-            "Theme patch repair rejected or unavailable; manual review is required.",
-            file=sys.stderr,
-        )
+    except (RepairError, OSError, subprocess.SubprocessError, UnicodeError) as error:
+        print("Theme patch repair rejected: " + safe_diagnostic(error), file=sys.stderr)
         return 1
     print(
         "Theme patch series verified; native/schema validation and review remain required."

@@ -65,6 +65,13 @@ job create or update the single `automation/tdlib-theme-patch` PR. It never
 merges, pushes master, or publishes native releases. Model output is source
 data, never shell commands. Failed/stale validation leaves the PR unchanged.
 
+Automatic PR writes are opt-in via repository variable
+`TDLIB_REPAIR_PR_WRITES=true` and GitHub's repository setting allowing Actions
+to create PRs. That GitHub setting also permits approving reviews, so enabling
+it requires an explicit maintainer decision; this workflow never approves.
+Without opt-in, generation and validation still retain the proposed patch and
+provenance as a CI artifact.
+
 PRs and manual `Sync TDLib Artifacts` runs with `validate_only: true` execute
 only read-only preflight. Native artifact publication remains restricted to
 canonical master after the existing build gates. The existing HarmonyOS PR is
