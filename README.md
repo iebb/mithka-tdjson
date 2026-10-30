@@ -120,6 +120,36 @@ original TDLib binaries. Releases are never deleted by the sync workflow. A
 manual `force=true` run publishes a separate `-rebuild-<run-id>-<attempt>`
 release instead of replacing the original artifacts.
 
+## HarmonyOS (OHOS) arm64
+
+`.github/workflows/build-ohos.yml` builds `tdjson` for HarmonyOS (ohos)
+arm64 in a digest-pinned OpenHarmony SDK container. It is manual and
+publishes an immutable, non-latest release tagged
+`tdjson-ohos-<version>-<sha12>-mithka-<patch-sha12>-build-<build-sha12>-v<schema>`
+only when that exact source, patch set, build definition, and artifact
+schema do not already have a complete release, with these assets:
+
+```text
+tdjson-ohos-arm64.zip
+tdjson-manifest.json
+SHA256SUMS
+```
+
+The zip contains the ABI directory at its root, matching the Android
+layout that the Mithka ohos consumer expects:
+
+```text
+arm64-v8a/
+  libtdjson.so
+```
+
+`tdjson-manifest.json` follows the same schema-v2 contract as the sync
+workflow (archive/member digests plus source, patch set, build
+definition, and packaging provenance), covering the ohos arm64 asset so
+the Mithka installer can pin and verify it. The workflow never deletes
+or replaces a published release; a manual `force=true` run publishes a
+separate `-rebuild-<run-id>-<attempt>` release instead.
+
 ## Telegram TgVoip iOS
 
 `.github/workflows/build-tgvoip-ios.yml` builds the same `TgVoipWebrtc` Bazel

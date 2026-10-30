@@ -1,0 +1,265 @@
+name: Build tdjson HarmonyOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: TDLib ref (sha or branch) to build
+        required: false
+        # The Mithka patch series is anchored to the TDLib 1.8.68 commit of the
+        # latest sync-upstream release; override with master to test drift.
+        default: c15d3f5a5de6e3ba5839822c451152e5e18bb700
+      force:
+        description: Publish a new immutable rebuild even if this source release exists
+        required: false
+        type: boolean
+        default: false
+
+# Only the publish job may write releases; every other job is read-only.
+permissions:
+  contents: read
+
+env:
+  TD_REPO: https://github.com/tdlib/td.git
+  ARTIFACT_SCHEMA_VERSION: '2'
+
+jobs:
+  prepare:
+    name: Resolve upstream TDLib
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+      upstream_short_sha: ${{ steps.resolve.outputs.upstream_short_sha }}
+      tdlib_version: ${{ steps.resolve.outputs.tdlib_version }}
+      patchset_sha: ${{ steps.resolve.outputs.patchset_sha }}
+      build_definition_sha: ${{ steps.resolve.outputs.build_definition_sha }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve upstream commit and immutable release identity
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          FORCE_BUILD: ${{ inputs.force || false }}
+        run: |
+          upstream_sha="$(git ls-remote "$TD_REPO" "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')"
+          if [ -z "$upstream_sha" ] && [[ "$UPSTREAM_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            upstream_sha="$UPSTREAM_REF"
+          fi
+          test -n "$upstream_sha"
+          upstream_short_sha="${upstream_sha:0:12}"
+          tdlib_version="$( \
+            curl -fsSL "https://raw.githubusercontent.com/tdlib/td/$upstream_sha/CMakeLists.txt" \
+            | sed -nE 's/^project\(TDLib VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
+          test -n "$tdlib_version"
+          patchset_sha="$({
+            sha256sum patches/series
+            while IFS= read -r patch_name; do
+              test -n "$patch_name" || continue
+              [[ "$patch_name" != \#* ]] || continue
+              sha256sum "patches/$patch_name"
+            done < patches/series
+          } | sha256sum | awk '{print $1}')"
+          patchset_short_sha="${patchset_sha:0:12}"
+          build_definition_sha="$({
+            sha256sum .gitattributes
+            sha256sum .github/workflows/build-ohos.yml
+            sha256sum scripts/apply-mithka-patches.sh
+            sha256sum scripts/build-ohos-libs.sh
+          } | sha256sum | awk '{print $1}')"
+          build_definition_short_sha="${build_definition_sha:0:12}"
+          # Same immutable identity contract as sync-upstream.yml: the tag
+          # names the exact source, patch set, build definition (including the
+          # digest-pinned SDK container), and artifact schema.
+          base_release_tag="tdjson-ohos-$tdlib_version-$upstream_short_sha-mithka-$patchset_short_sha-build-$build_definition_short_sha-v$ARTIFACT_SCHEMA_VERSION"
+          release_tag="$base_release_tag"
+          should_build=true
+          if gh release view "$base_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            release_assets="$(gh release view "$base_release_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            release_complete=true
+            for asset in \
+              tdjson-ohos-arm64.zip \
+              tdjson-manifest.json \
+              SHA256SUMS; do
+              if ! grep -Fx "$asset" <<<"$release_assets" >/dev/null; then
+                release_complete=false
+              fi
+            done
+            if [ "$FORCE_BUILD" = "true" ] || [ "$release_complete" != "true" ]; then
+              # Never delete or replace a published release. Rebuilds publish
+              # a separate release with its own identity instead.
+              release_tag="$base_release_tag-rebuild-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            else
+              should_build=false
+            fi
+          fi
+          {
+            echo "upstream_sha=$upstream_sha"
+            echo "upstream_short_sha=$upstream_short_sha"
+            echo "tdlib_version=$tdlib_version"
+            echo "patchset_sha=$patchset_sha"
+            echo "build_definition_sha=$build_definition_sha"
+            echo "release_tag=$release_tag"
+            echo "should_build=$should_build"
+          } >> "$GITHUB_OUTPUT"
+          echo "TDLib $UPSTREAM_REF -> $upstream_sha ($tdlib_version)"
+          echo "Mithka patch set: $patchset_sha"
+          echo "Build definition: $build_definition_sha"
+          echo "Release tag: $release_tag (build: $should_build)"
+
+  build:
+    name: ohos arm64
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      # OpenHarmony SDK 6.0.2.642 / Flutter oh-3.35.7-release command-line
+      # tools. The versioned tag and manifest digest pin the SDK and container
+      # identity; the digest is also part of build_definition_sha via this file.
+      image: ghcr.io/niuhuan/harmony-next-flutter-pipeline-docker/image:6.0.2.642-3.35.7@sha256:2ec15fafd8f57ff74ea58e4ca934266eb11409169d39ef99b038be07db54e2a9
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends clang gperf libssl-dev zip
+
+      - uses: actions/checkout@v7
+        with:
+          # Do not persist a checkout credential inside the build container.
+          persist-credentials: false
+
+      - name: Build tdjson ohos arm64
+        env:
+          TD_COMMIT: ${{ needs.prepare.outputs.upstream_sha }}
+        run: |
+          scripts/build-ohos-libs.sh
+          ls -lh dist/
+
+      - name: Verify packaged library
+        run: |
+          test -f dist/tdjson-ohos-arm64.zip
+          unzip -l dist/tdjson-ohos-arm64.zip
+          unzip -l dist/tdjson-ohos-arm64.zip | grep -q 'arm64-v8a/libtdjson.so'
+
+      - name: Upload ohos asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: tdjson-ohos-arm64
+          path: dist/tdjson-ohos-arm64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish ohos release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download ohos asset
+        uses: actions/download-artifact@v8
+        with:
+          name: tdjson-ohos-arm64
+          path: release-assets
+
+      - name: Publish ohos release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          TDLIB_VERSION: ${{ needs.prepare.outputs.tdlib_version }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          PATCHSET_SHA: ${{ needs.prepare.outputs.patchset_sha }}
+          BUILD_DEFINITION_SHA: ${{ needs.prepare.outputs.build_definition_sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          def sha256_stream(stream):
+              digest = hashlib.sha256()
+              while chunk := stream.read(1024 * 1024):
+                  digest.update(chunk)
+              return digest.hexdigest()
+
+          root = Path("release-assets")
+          assets = {}
+          for path in sorted(root.glob("*.zip")):
+              with path.open("rb") as stream:
+                  archive_sha256 = sha256_stream(stream)
+              members = {}
+              with zipfile.ZipFile(path) as archive:
+                  for info in archive.infolist():
+                      if info.is_dir():
+                          continue
+                      member = Path(info.filename)
+                      if member.is_absolute() or ".." in member.parts:
+                          raise SystemExit(
+                              f"unsafe member in {path.name}: {info.filename}"
+                          )
+                      if info.filename in members:
+                          raise SystemExit(
+                              f"duplicate member in {path.name}: {info.filename}"
+                          )
+                      with archive.open(info) as stream:
+                          members[info.filename] = {
+                              "sha256": sha256_stream(stream),
+                              "size": info.file_size,
+                          }
+              assets[path.name] = {
+                  "sha256": archive_sha256,
+                  "size": path.stat().st_size,
+                  "members": members,
+              }
+          expected = {"tdjson-ohos-arm64.zip": {"arm64-v8a/libtdjson.so"}}
+          if set(assets) != set(expected):
+              raise SystemExit(f"unexpected release assets: {sorted(assets)}")
+          for asset_name, expected_members in expected.items():
+              actual_members = set(assets[asset_name]["members"])
+              if actual_members != expected_members:
+                  raise SystemExit(
+                      f"unexpected members in {asset_name}: {sorted(actual_members)}"
+                  )
+              empty = [
+                  member_name
+                  for member_name, metadata in assets[asset_name]["members"].items()
+                  if metadata["size"] <= 0
+              ]
+              if empty:
+                  raise SystemExit(f"empty members in {asset_name}: {empty}")
+          manifest = {
+              "schema_version": int(os.environ["ARTIFACT_SCHEMA_VERSION"]),
+              "release_tag": os.environ["RELEASE_TAG"],
+              "tdlib_version": os.environ["TDLIB_VERSION"],
+              "upstream_repository": "tdlib/td",
+              "upstream_sha": os.environ["UPSTREAM_SHA"],
+              "mithka_tdjson_sha": os.environ["GITHUB_SHA"],
+              "patchset_sha256": os.environ["PATCHSET_SHA"],
+              "build_definition_sha256": os.environ["BUILD_DEFINITION_SHA"],
+              "assets": assets,
+          }
+          (root / "tdjson-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          (
+            cd release-assets
+            sha256sum ./*.zip ./tdjson-manifest.json > SHA256SUMS
+          )
+          ls -lh release-assets
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --target "$GITHUB_SHA" \
+            --title "TDLib $TDLIB_VERSION ohos arm64 ($UPSTREAM_SHA)" \
+            --notes "Automated HarmonyOS (ohos) arm64 build of tdjson from tdlib/td@$UPSTREAM_SHA (TDLib $TDLIB_VERSION) with Mithka patch set $PATCHSET_SHA and build definition $BUILD_DEFINITION_SHA. Installs to ohos/entry/libs/arm64-v8a/libtdjson.so. tdjson-manifest.json records the schema-v$ARTIFACT_SCHEMA_VERSION archive/member digests and provenance for the Mithka installer. Releases are immutable: rebuilds publish a separate -rebuild release instead of replacing existing artifacts." \
+            --latest=false
