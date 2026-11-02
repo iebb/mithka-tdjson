@@ -6,9 +6,9 @@ on:
       upstream_ref:
         description: TDLib ref (sha or branch) to build
         required: false
-        # The Mithka patch series is anchored to the TDLib 1.8.68 commit of the
+        # The Mithka patch series is anchored to the same upstream commit as the
         # latest sync-upstream release; override with master to test drift.
-        default: c15d3f5a5de6e3ba5839822c451152e5e18bb700
+        default: 4c6377aa7386c39217878a9a56d581922ad37ca4
       force:
         description: Publish a new immutable rebuild even if this source release exists
         required: false
