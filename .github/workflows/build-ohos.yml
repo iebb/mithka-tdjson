@@ -126,7 +126,7 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends clang gperf libssl-dev zip
+          apt-get install -y --no-install-recommends clang gperf libssl-dev zip make
 
       - uses: actions/checkout@v7
         with:
