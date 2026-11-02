@@ -126,7 +126,7 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends clang gperf libssl-dev zip make cmake ninja-build
+          apt-get install -y --no-install-recommends clang gperf libssl-dev zlib1g-dev zip make cmake ninja-build
 
       - uses: actions/checkout@v7
         with:
