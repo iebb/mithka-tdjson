@@ -85,7 +85,7 @@ index 02aa5e4..10edb4a 100644
 +  return parallelism <= 0 ? 0 : td::min(parallelism, 24);
 +}
 +
- Result<std::pair<FileFd, string>> try_create_new_file(CSlice path, CSlice file_name) {
+ Result<std::pair<FileFd, string>> try_create_new_file(CSlice path, Slice file_name) {
    LOG(DEBUG) << "Trying to create new file \"" << file_name << "\" in the directory \"" << path << '"';
    auto name = PSTRING() << path << file_name;
 @@ -82,6 +103,32 @@ StringBuilder &operator<<(StringBuilder &sb, const Ext &ext) {
@@ -142,7 +142,7 @@ index fdc1a7e..841f083 100644
 +
  Result<std::pair<FileFd, string>> open_temp_file(FileType file_type) TD_WARN_UNUSED_RESULT;
  
- Result<string> create_from_temp(FileType file_type, CSlice temp_path, CSlice name) TD_WARN_UNUSED_RESULT;
+ Result<string> create_from_temp(FileType file_type, CSlice temp_path, Slice name) TD_WARN_UNUSED_RESULT;
 diff --git a/td/telegram/files/FileUploadManager.cpp b/td/telegram/files/FileUploadManager.cpp
 index 5a85f65..bece430 100644
 --- a/td/telegram/files/FileUploadManager.cpp
