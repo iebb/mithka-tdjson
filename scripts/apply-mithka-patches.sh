@@ -85,7 +85,11 @@ for patch_file in "${patch_files[@]}"; do
   elif git -C "$TD_SOURCE" apply --check "$patch_file"; then
     echo "==> Applying $patch_name directly"
     git -C "$TD_SOURCE" apply "$patch_file"
-  elif git -C "$TD_SOURCE" apply --3way --check "$patch_file" >/dev/null 2>&1; then
+  # A three-way apply requires the index to match the files. A copied
+  # checkout (the iOS build copies TDLib before patching) has stale cached
+  # stat data, so refresh it first. Content changes stay unstaged.
+  elif git -C "$TD_SOURCE" update-index -q --refresh >/dev/null 2>&1 || true
+    git -C "$TD_SOURCE" apply --3way --check "$patch_file" >/dev/null 2>&1; then
     echo "==> Applying $patch_name with a three-way merge"
     git -C "$TD_SOURCE" apply --3way "$patch_file"
   else

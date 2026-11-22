@@ -65,6 +65,27 @@ class PatchApplicationTests(unittest.TestCase):
         self.assertIn("already applied", second.stdout)
         self.assertEqual(self.file.read_text(), expected)
 
+    def test_three_way_merge_applies_in_a_copied_checkout(self):
+        # The iOS build copies the TDLib checkout before patching, which
+        # leaves cached stat data in the copied index stale.
+        original = self.file.read_text()
+        self.file.write_text(original.replace("  work();", "  work();\n  extra();"))
+        self.install_patch(self.git("diff"))
+        upstream = original.replace("void run() {", "void run(int) {")
+        self.file.write_text(upstream)
+        self.git("commit", "-am", "Upstream edits the patch context")
+        copy = self.root / "copied-source"
+        shutil.copytree(self.source, copy, symlinks=True)
+        self.source = copy
+        self.file = copy / "example.cpp"
+        result = self.apply()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("three-way merge", result.stdout)
+        self.assertEqual(
+            self.file.read_text(),
+            upstream.replace("  work();", "  work();\n  extra();"),
+        )
+
     def test_unanchored_insertion_is_not_applied_to_a_stale_line(self):
         self.install_patch(
             "--- a/example.cpp\n+++ b/example.cpp\n"
